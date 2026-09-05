@@ -252,6 +252,24 @@ tasks:
         done
         echo "done; see http://localhost:${GRAFANA_PORT:-3000}"
 
+  dashboards:generate:
+    desc: Regenerate the Grafana dashboard JSON
+    sources:
+      - deploy/grafana/dashboards.py
+    generates:
+      - deploy/grafana/dashboards/*.json
+    cmds:
+      - ./deploy/grafana/dashboards.py
+
+  dashboards:stale:
+    desc: Fail if the dashboard JSON does not match the generator
+    silent: true
+    cmds:
+      - task: dashboards:generate
+      - |
+        git diff --exit-code -- deploy/grafana/dashboards \
+          || { echo "dashboards are stale — run 'task dashboards:generate' and commit"; exit 1; }
+
   dashboards:check:
     desc: Run every Grafana panel query against the running Prometheus
     # A panel that returns nothing reads as "the system is idle" rather than

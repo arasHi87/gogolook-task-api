@@ -31,7 +31,7 @@
     {
       "type": "state-timeline",
       "title": "Circuit state",
-      "description": "0 closed, 1 half-open, 2 open. Encoded by severity so max-over-time still means 'how bad did it get'.",
+      "description": "Green is closed, amber half-open, red open \u2014 hover for the state name. Encoded as 0/1/2 by severity, so max-over-time still means 'how bad did it get'.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -81,6 +81,7 @@
               }
             ]
           },
+          "decimals": 0,
           "mappings": [
             {
               "type": "value",
@@ -104,12 +105,13 @@
         "overrides": []
       },
       "options": {
-        "showValue": "auto",
+        "showValue": "never",
         "mergeValues": true,
+        "rowHeight": 0.9,
         "legend": {
           "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true
+          "showLegend": false
         }
       }
     },
@@ -144,6 +146,7 @@
         "defaults": {
           "unit": "ops",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -215,6 +218,7 @@
         "defaults": {
           "unit": "s",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -287,6 +291,7 @@
         "defaults": {
           "unit": "reqps",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -347,6 +352,7 @@
         "defaults": {
           "unit": "reqps",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -407,6 +413,7 @@
         "defaults": {
           "unit": "short",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -467,6 +474,7 @@
         "defaults": {
           "unit": "reqps",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -550,6 +558,7 @@
         "defaults": {
           "unit": "short",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -610,6 +619,7 @@
         "defaults": {
           "unit": "s",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -682,6 +692,7 @@
         "defaults": {
           "unit": "short",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -742,6 +753,7 @@
         "defaults": {
           "unit": "bytes",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -802,6 +814,7 @@
         "defaults": {
           "unit": "s",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -851,7 +864,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (result) (rate(config_reloads_total[15m])) or vector(0)",
+          "expr": "sum by (result) (rate(config_reloads_total[15m]))",
           "legendFormat": "{{result}}",
           "refId": "A",
           "instant": false,
@@ -862,6 +875,7 @@
         "defaults": {
           "unit": "ops",
           "min": 0,
+          "max": null,
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
