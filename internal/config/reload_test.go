@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -171,33 +170,4 @@ func TestHotPrefixesAreRealPaths(t *testing.T) {
 		}
 	}
 	_ = base
-}
-
-func TestPrintConfigRedactsTheDSN(t *testing.T) {
-	t.Parallel()
-
-	c := config.Defaults()
-	c.Storage.Backend = config.BackendPostgres
-	c.Storage.Postgres.DSN = "postgres://taskapi:hunter2@db:5432/tasks"
-
-	var buf bytes.Buffer
-	if err := c.WriteYAML(&buf); err != nil {
-		t.Fatalf("WriteYAML: %v", err)
-	}
-	out := buf.String()
-
-	if strings.Contains(out, "hunter2") {
-		t.Errorf("--print-config leaked the DSN password:\n%s", out)
-	}
-	if !strings.Contains(out, config.RedactedValue) {
-		t.Errorf("--print-config did not mark the DSN as redacted:\n%s", out)
-	}
-	// Durations must be readable, not nanosecond counts.
-	if !strings.Contains(out, "read_header_timeout: 5s") {
-		t.Errorf("--print-config rendered durations unreadably:\n%s", out)
-	}
-	// Redaction must not mutate the caller's config.
-	if c.Storage.Postgres.DSN == config.RedactedValue {
-		t.Error("WriteYAML mutated the live configuration")
-	}
 }

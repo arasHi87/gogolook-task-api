@@ -36,17 +36,22 @@ func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 
 // UnmarshalYAML accepts both a string ("30s") and a bare integer (nanoseconds),
 // so a config written by a machine still loads.
+//
+// The integer is tried first on purpose. yaml.v3 will decode an unquoted
+// number into a string, so a string-first order swallows every numeric form
+// and then fails to parse it as a duration — which is what this did until a
+// test asked for the behaviour the comment already claimed.
 func (d *Duration) UnmarshalYAML(unmarshal func(any) error) error {
-	var s string
-	if err := unmarshal(&s); err == nil {
-		return d.UnmarshalText([]byte(s))
-	}
 	var n int64
-	if err := unmarshal(&n); err != nil {
+	if err := unmarshal(&n); err == nil {
+		*d = Duration(n)
+		return nil
+	}
+	var s string
+	if err := unmarshal(&s); err != nil {
 		return fmt.Errorf("duration must be a string like \"30s\" or an integer of nanoseconds")
 	}
-	*d = Duration(n)
-	return nil
+	return d.UnmarshalText([]byte(s))
 }
 
 // MarshalJSON renders for GET /debug/config.

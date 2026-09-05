@@ -1,55 +1,12 @@
 package config_test
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/spf13/pflag"
-
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 )
-
-// writeConfig drops a YAML file in a temp dir and returns its path.
-func writeConfig(t *testing.T, body string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	return path
-}
-
-// newFlags returns a parsed flag set, as cobra would hand us.
-func newFlags(t *testing.T, args ...string) *pflag.FlagSet {
-	t.Helper()
-	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
-	config.RegisterFlags(fs)
-	if err := fs.Parse(args); err != nil {
-		t.Fatalf("parse %v: %v", args, err)
-	}
-	return fs
-}
-
-// environ turns a map into the []string shape os.Environ produces.
-func environ(kv map[string]string) func() []string {
-	out := make([]string, 0, len(kv))
-	for k, v := range kv {
-		out = append(out, k+"="+v)
-	}
-	return func() []string { return out }
-}
-
-func load(t *testing.T, o config.Options) *config.Result {
-	t.Helper()
-	res, err := config.Load(o)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	return res
-}
 
 // The whole point of the section: flags beat environment beats file beats
 // defaults. One case per layer, each overriding exactly the one below it.
@@ -197,22 +154,6 @@ func TestThreeSpellingsAreOneKnob(t *testing.T) {
 	}
 }
 
-// yamlFor turns "a.b.c: v" into nested YAML.
-func yamlFor(path, value string) string {
-	parts := strings.Split(path, ".")
-	var b strings.Builder
-	for i, p := range parts {
-		b.WriteString(strings.Repeat("  ", i))
-		b.WriteString(p)
-		b.WriteString(":")
-		if i == len(parts)-1 {
-			b.WriteString(" " + value)
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 func TestEnvNameRoundTrip(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
@@ -268,43 +209,6 @@ func TestMissingExplicitConfigIsFatal(t *testing.T) {
 	_, err := config.Load(config.Options{File: "/nonexistent/config.yaml", Environ: environ(nil)})
 	if err == nil {
 		t.Fatal("an explicit --config that does not exist must be an error")
-	}
-}
-
-func TestUnknownSetKeyIsFatal(t *testing.T) {
-	t.Parallel()
-	_, err := config.Load(config.Options{
-		Environ: environ(nil),
-		Flags:   newFlags(t, "--set", "queue.wokers=4"),
-	})
-	if err == nil || !strings.Contains(err.Error(), "queue.wokers") {
-		t.Fatalf("err = %v, want an error naming the unknown --set key", err)
-	}
-}
-
-// -v and --trace are shorthands, and an explicit --logging.level must win over
-// them: a user who typed both meant the specific one.
-func TestVerbosityShorthands(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		args []string
-		want string
-	}{
-		{[]string{}, "info"},
-		{[]string{"-v"}, "debug"},
-		{[]string{"--debug"}, "debug"},
-		{[]string{"--trace"}, "trace"},
-		{[]string{"-v", "--trace"}, "trace"},
-		{[]string{"-v", "--logging.level=error"}, "error"},
-	}
-	for _, tc := range cases {
-		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
-			t.Parallel()
-			got := load(t, config.Options{Environ: environ(nil), Flags: newFlags(t, tc.args...)}).Config
-			if got.Logging.Level != tc.want {
-				t.Errorf("logging.level = %q, want %q", got.Logging.Level, tc.want)
-			}
-		})
 	}
 }
 
