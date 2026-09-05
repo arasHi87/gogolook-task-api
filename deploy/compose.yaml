@@ -1,33 +1,91 @@
 # The local stack.
 #
-# At this milestone it is the API alone on the in-memory store, which is all
-# the exercise requires. Postgres, the queue worker, the webhook sink,
-# Prometheus and Grafana join it as the milestones that need them land, and
-# `api` and `worker` will run the same image with different subcommands —
-# which is what shows the queue is genuinely decoupled.
+# Postgres, a one-shot migration, and the API on top of it. The queue worker,
+# the webhook sink, Prometheus and Grafana join as the milestones that need
+# them land — and `api` and `worker` will run the same image with different
+# subcommands, which is what shows the queue is genuinely decoupled.
 name: taskapi
 
+x-image: &image
+  build:
+    context: ..
+    dockerfile: Dockerfile
+    args:
+      VERSION: ${VERSION:-dev}
+      COMMIT: ${COMMIT:-none}
+      DATE: ${DATE:-unknown}
+  image: taskapi:${VERSION:-dev}
+
+x-postgres-env: &postgres-env
+  TASKAPI_STORAGE_BACKEND: postgres
+  TASKAPI_STORAGE_POSTGRES_DSN: postgres://taskapi:${POSTGRES_PASSWORD:-taskapi}@postgres:5432/taskapi?sslmode=disable
+
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: taskapi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taskapi}
+      POSTGRES_DB: taskapi
+    # A named volume, so the data survives `compose restart` but `compose
+    # down -v` still gives a reviewer a clean slate.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    command:
+      - postgres
+      # Defaults are tuned for a machine with far less memory than a laptop.
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - max_connections=100
+      # The queue is a high-churn table and its dead tuples must be reclaimed
+      # promptly, or the claim query starts scanning them.
+      - -c
+      - autovacuum_naptime=10s
+    healthcheck:
+      # -U and -d matter: without them pg_isready checks the wrong database and
+      # reports ready before ours exists.
+      test: ["CMD-SHELL", "pg_isready -U taskapi -d taskapi"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+
+  # A one-shot, so nothing races the schema. It runs the same image as the
+  # service: a separate migration image is a way to apply one version's schema
+  # and then start another version's code.
+  migrate:
+    <<: *image
+    command: ["migrate", "up"]
+    environment:
+      <<: *postgres-env
+      TASKAPI_LOGGING_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   api:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-      args:
-        VERSION: ${VERSION:-dev}
-        COMMIT: ${COMMIT:-none}
-        DATE: ${DATE:-unknown}
-    image: taskapi:${VERSION:-dev}
+    <<: *image
     command: ["all"]
     ports:
       - "${API_PORT:-8080}:8080"
-      # The admin port is published only so a reviewer can curl it. In a real
-      # deployment it stays on the cluster network and never leaves it.
+      # Published only so a reviewer can curl it. In a real deployment the
+      # admin port stays on the cluster network and never leaves it.
       - "${ADMIN_PORT:-9090}:9090"
     environment:
-      # Every knob is reachable this way; see `taskapi all --print-config`.
+      <<: *postgres-env
       TASKAPI_LOGGING_FORMAT: json
       TASKAPI_LOGGING_LEVEL: ${LOG_LEVEL:-info}
-      TASKAPI_STORAGE_BACKEND: memory
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     # The image is distroless and has no shell, so the binary probes itself.
     healthcheck:
       test: ["CMD", "/taskapi", "healthcheck"]
@@ -37,8 +95,8 @@ services:
       retries: 3
     restart: unless-stopped
     stop_grace_period: 30s
-    # Limits on every service, so `docker compose up` cannot eat the reviewer's
-    # laptop while they are reading the README.
+    # Limits on every service, so `compose up` cannot eat the reviewer's laptop
+    # while they are reading the README.
     deploy:
       resources:
         limits:
@@ -49,3 +107,6 @@ services:
     read_only: true
     cap_drop:
       - ALL
+
+volumes:
+  pgdata:

@@ -71,8 +71,19 @@ tasks:
 
   test:integration:
     desc: Full suite including the testcontainers Postgres
+    # Needs a Docker daemon. `task test` skips these with -short.
     cmds:
       - go test -race -covermode=atomic -coverpkg={{.PKG}} -coverprofile=coverage.out {{.PKG}}
+
+  migrate:
+    desc: Apply the schema to the database in TASKAPI_STORAGE_POSTGRES_DSN
+    cmds:
+      - go run ./cmd/taskapi migrate up {{.CLI_ARGS}}
+
+  psql:
+    desc: Open a shell on the stack's database
+    cmds:
+      - "{{.COMPOSE}} exec postgres psql -U taskapi -d taskapi"
 
   cover:
     desc: Open the HTML coverage report

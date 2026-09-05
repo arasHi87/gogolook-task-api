@@ -20,15 +20,18 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/pflag"
 
 	"github.com/arasHi87/gogolook-task-api/internal/admin"
 	"github.com/arasHi87/gogolook-task-api/internal/buildinfo"
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
+	"github.com/arasHi87/gogolook-task-api/internal/postgres"
 	"github.com/arasHi87/gogolook-task-api/internal/runtime"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 	"github.com/arasHi87/gogolook-task-api/internal/task/memrepo"
+	"github.com/arasHi87/gogolook-task-api/internal/task/pgrepo"
 )
 
 // Mode selects which halves of the system this process runs.
@@ -76,6 +79,7 @@ type App struct {
 	apiServer   *http.Server
 	adminServer *http.Server
 	health      *admin.Handler
+	pool        *pgxpool.Pool
 
 	closers []func() error
 }
@@ -109,7 +113,7 @@ func New(o Options) (*App, error) {
 		reloaded:   make(chan struct{}, 1),
 	}
 
-	repo, err := newRepository(o.Config)
+	repo, err := a.newRepository(o.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -132,9 +136,17 @@ func New(o Options) (*App, error) {
 // readinessChecks are the dependencies this process needs to serve.
 //
 // There are none on the memory backend, which is correct rather than lazy: it
-// has no dependency that can be down. The Postgres pool registers one here.
+// has no dependency that can be down.
 func (a *App) readinessChecks() []admin.Check {
-	return nil
+	if a.pool == nil {
+		return nil
+	}
+	return []admin.Check{{
+		Name: "postgres",
+		// Ping, not a query: readiness asks whether a connection can be had,
+		// and a SELECT would also be reporting on the query planner.
+		Probe: a.pool.Ping,
+	}}
 }
 
 // adminHTTP borrows the public listener's timeouts for the private one. They
@@ -179,14 +191,31 @@ func (a *App) newAPIServer(cfg *config.Config) (*http.Server, error) {
 // newRepository selects the storage backend.
 //
 // memory is the default and needs nothing: it is what makes `go run` work with
-// no Postgres, no Docker and no configuration, which is the literal requirement
-// the exercise states. postgres is what everything built on top of it needs.
-func newRepository(cfg *config.Config) (task.Repository, error) {
+// no Postgres, no Docker and no configuration, which is the literal
+// requirement the exercise states. postgres adds durability, the transactional
+// outbox and the queue.
+func (a *App) newRepository(cfg *config.Config) (task.Repository, error) {
 	switch cfg.Storage.Backend {
 	case config.BackendMemory:
 		return memrepo.New(), nil
+
 	case config.BackendPostgres:
-		return nil, fmt.Errorf("storage backend %q is not wired yet", cfg.Storage.Backend)
+		// The pool is opened here rather than lazily, so an unreachable
+		// database is a startup failure with a clear message instead of a
+		// confusing error on the first request.
+		role := postgres.RoleAPI
+		if a.mode == ModeWorker {
+			role = postgres.RoleWorker
+		}
+		pool, err := postgres.Open(context.Background(), cfg.Storage.Postgres, role, cfg.Service.Instance)
+		if err != nil {
+			return nil, err
+		}
+		a.pool = pool
+		a.closers = append(a.closers, func() error { pool.Close(); return nil })
+
+		return pgrepo.New(pool), nil
+
 	default:
 		return nil, fmt.Errorf("unknown storage backend %q", cfg.Storage.Backend)
 	}

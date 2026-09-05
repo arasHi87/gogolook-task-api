@@ -52,6 +52,7 @@ outbox and the queue.`,
 		newServeCommand(),
 		newWorkerCommand(),
 		newAllCommand(),
+		newMigrateCommand(),
 		newVersionCommand(),
 		newHealthcheckCommand(),
 	)

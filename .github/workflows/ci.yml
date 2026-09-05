@@ -43,6 +43,13 @@ jobs:
       - name: coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
+      # The queue and the outbox cannot be tested against a fake: SKIP LOCKED,
+      # lease expiry, partial unique indexes and transaction visibility are
+      # properties of Postgres, not of our code. testcontainers starts a real
+      # one; the runner already has a Docker daemon.
+      - name: integration tests
+        run: go test -race -count=1 ./internal/postgres/... ./internal/outbox/... ./internal/task/pgrepo/...
+
       - name: build
         run: go build -trimpath ./...
 
