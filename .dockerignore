@@ -1,0 +1,15 @@
+.git
+.github
+.gitignore
+.dockerignore
+go.work
+go.work.sum
+.env
+deploy/
+docs/
+test/load/
+bin/
+dist/
+*.md
+!README.md
+coverage.*

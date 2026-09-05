@@ -1,0 +1,24 @@
+# Build output. These are anchored with a leading slash on purpose: a bare
+# "taskapi" pattern matches at any depth and would silently exclude the
+# cmd/taskapi/ package directory.
+/bin/
+/dist/
+/taskapi
+
+# Local Go workspace (shadows a parent go.work during development; a clone needs none)
+go.work
+go.work.sum
+
+# Secrets and local overrides
+.env
+config.local.yaml
+
+# Test / coverage artefacts
+coverage.out
+coverage.html
+*.test
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,70 @@
+# golangci-lint v2 configuration.
+#
+# The enabled set is deliberately opinionated but not exhaustive: every linter
+# here has caught a real class of bug in this codebase's problem domain
+# (contexts, HTTP bodies, error wrapping, SQL). Style-only linters are left off
+# so a failing run always means something.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose      # an unclosed response body leaks a connection per call
+    - contextcheck   # every outbound call must inherit the caller's deadline
+    - copyloopvar
+    - errorlint      # %w and errors.Is, not == on wrapped errors
+    - gosec
+    - misspell
+    - nilerr
+    - noctx          # no HTTP request without a context
+    - revive
+    - unconvert
+    - whitespace
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # readability of the config struct beats a few bytes
+        - shadow         # flags the idiomatic `if err := f(); err != nil`
+        - inline         # advisory only, and it fires on third-party call sites
+    revive:
+      rules:
+        - name: exported
+          arguments: ["disableStutteringCheck"]
+        - name: package-comments
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: indent-error-flow
+        - name: var-naming
+    gosec:
+      excludes:
+        - G404 # math/rand is correct for jitter; the linter cannot tell
+
+  exclusions:
+    generated: lax
+    paths:
+      - gen
+    rules:
+      # Test files may take shortcuts that production code may not.
+      - path: _test\.go
+        linters: [gosec, bodyclose, noctx, contextcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/arasHi87/gogolook-task-api
+  exclusions:
+    paths:
+      - gen
