@@ -65,6 +65,10 @@ func (a *App) reload() ReloadResult {
 		}
 	}
 
+	// Only the success path counts here. Every failure goes through reject,
+	// which is the single choke point and records there — counting in both
+	// places would report one rejected reload twice.
+	a.metrics.Deps.ConfigReloaded("applied")
 	a.log.Info("SIGHUP reload applied", slog.Int("changed", len(hot)))
 	a.signalReloaded()
 	return ReloadResult{Applied: hot, RestartOnly: restartOnly}
@@ -143,8 +147,13 @@ func (a *App) applyHot(next *config.Config, hot []config.Change) error {
 }
 
 // reject logs a refused reload. Every path that abandons a reload goes through
-// here, so the running configuration being untouched is always said out loud.
+// here, so the running configuration being untouched is always said out loud —
+// and so the counter has exactly one place to be incremented.
+//
+// The reason is a label, and it is bounded because every caller passes a
+// literal: read error, invalid, diff failed, merge failed, invalid after merge.
 func (a *App) reject(reason string, err error) {
+	a.metrics.Deps.ConfigReloaded(reason)
 	a.log.Error("config reload rejected",
 		slog.String("reason", reason), slog.Any("err", err))
 }

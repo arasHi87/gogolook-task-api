@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -31,6 +32,7 @@ import (
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/idempotency"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
+	"github.com/arasHi87/gogolook-task-api/internal/metrics"
 	"github.com/arasHi87/gogolook-task-api/internal/postgres"
 	"github.com/arasHi87/gogolook-task-api/internal/queue"
 	"github.com/arasHi87/gogolook-task-api/internal/queue/handler"
@@ -99,6 +101,9 @@ type App struct {
 	auth    *auth.Resolver
 	limiter *ratelimit.Limiter
 
+	// metrics is built before anything that reports into it.
+	metrics *metrics.Registry
+
 	// The queue runs only on the postgres backend: it is the outbox, and an
 	// in-memory store has no transaction to write one in.
 	jobs        *queue.Pool
@@ -137,6 +142,9 @@ func New(o Options) (*App, error) {
 		reloaded:   make(chan struct{}, 1),
 	}
 
+	// First, because everything below reports into it.
+	a.metrics = metrics.New(o.Config.Observability.Metrics)
+
 	repo, err := a.newRepository(o.Config)
 	if err != nil {
 		return nil, err
@@ -157,10 +165,14 @@ func New(o Options) (*App, error) {
 		}
 	}
 
+	if err := a.registerCollectors(o.Logger.Logger); err != nil {
+		return nil, err
+	}
+
 	// The admin listener runs in every mode, including worker: a process with
 	// no public port still has to be scrapeable and probeable.
 	a.health = admin.New(a.readinessChecks()...)
-	a.adminServer = newHTTPServer(adminHTTP(o.Config), a.health.Mux(), o.Logger.Logger, "admin")
+	a.adminServer = newHTTPServer(adminHTTP(o.Config), a.health.Mux(a.debug()), o.Logger.Logger, "admin")
 
 	return a, nil
 }
@@ -194,7 +206,7 @@ func (a *App) newGuards(cfg *config.Config, log *slog.Logger) {
 	a.auth = auth.NewResolver(cfg.Auth, cfg.HTTP.TrustedProxyHops)
 
 	if cfg.RateLimit.Enabled {
-		a.limiter = ratelimit.New(cfg.RateLimit, log)
+		a.limiter = ratelimit.New(cfg.RateLimit, log, a.metrics.Guards)
 	}
 }
 
@@ -220,13 +232,14 @@ func (a *App) newQueue(cfg *config.Config, log *slog.Logger) error {
 	store := queue.NewStore(a.pool)
 
 	a.listener = queue.NewListener(cfg.Storage.Postgres.DSN, log)
-	a.maintenance = queue.NewMaintenance(a.pool, store, cfg.Queue, log)
+	a.maintenance = queue.NewMaintenance(a.pool, store, cfg.Queue, log, a.metrics.Queue)
 
 	// The webhook is the only genuinely remote thing this service talks to,
 	// which makes it the only honest place for a circuit breaker.
 	webhook := handler.NewWebhook(handler.Options{
-		URL:     cfg.Webhook.URL,
-		Timeout: cfg.Webhook.Timeout.D(),
+		URL:      cfg.Webhook.URL,
+		Timeout:  cfg.Webhook.Timeout.D(),
+		Observer: a.metrics.Deps,
 		Guard: resilience.New(resilience.Options{
 			Name:      "webhook",
 			Breaker:   cfg.Breaker.Webhook,
@@ -234,6 +247,7 @@ func (a *App) newQueue(cfg *config.Config, log *slog.Logger) error {
 			Retry:     cfg.Webhook.Retry,
 			Logger:    log,
 			IsFailure: handler.IsDependencyFailure,
+			Observer:  a.metrics.Guards,
 		}),
 	})
 
@@ -249,11 +263,13 @@ func (a *App) newQueue(cfg *config.Config, log *slog.Logger) error {
 		Config:   cfg.Queue,
 		Logger:   log,
 		Notify:   a.listener.Notifications(),
+		Observer: a.metrics.Queue,
 	})
 	if err != nil {
 		return err
 	}
 	a.jobs = jobs
+	a.metrics.Queue.Configured(cfg.Queue.Workers)
 	return nil
 }
 
@@ -303,11 +319,87 @@ func (a *App) newAPIServer(cfg *config.Config) (*http.Server, error) {
 		Auth:              a.auth,
 		RateLimit:         a.limiter,
 		GlobalInflight:    inflightLimit(cfg),
+		Metrics:           a.metrics,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return newHTTPServer(cfg.HTTP, handler, a.log.Logger, "api"), nil
+}
+
+// recordJobOutcomes turns the pool's completion events into metrics.
+//
+// A subscriber rather than instrumentation inside the pool, because the event
+// already exists and already carries everything needed: the outcome, the wait
+// from enqueue to claim, and the time in the handler. Adding a second
+// reporting path inside the pool would be two places to keep in step.
+//
+// Delivery is non-blocking on the publisher's side, so a slow drain here drops
+// events rather than stalling a worker. That is the right trade for metrics
+// and the wrong one for the queue, which is why it is the queue's choice.
+func (a *App) recordJobOutcomes(ctx context.Context) error {
+	events, unsubscribe := a.jobs.Subscribe(256)
+	defer unsubscribe()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case e, ok := <-events:
+			if !ok {
+				return nil
+			}
+			a.metrics.Queue.Finished(e)
+		}
+	}
+}
+
+// debug assembles the operator surface for the admin listener.
+//
+// Everything here is on the private port and nowhere else. A heap profile is a
+// memory dump and the config dump names every dependency, so which port they
+// are on is the security boundary rather than a convention.
+func (a *App) debug() admin.Debug {
+	d := admin.Debug{
+		Level: a.log,
+		Pprof: a.Config().Admin.Pprof,
+		// The same renderer --print-config uses, so the two cannot disagree
+		// about what is masked.
+		Config: func(w io.Writer) error { return a.Config().WriteYAML(w) },
+	}
+	if a.metrics.Enabled() {
+		d.Metrics = a.metrics.Handler()
+	}
+	return d
+}
+
+// registerCollectors adds the metrics that have to query something on scrape.
+//
+// They are registered here rather than inside internal/metrics because they
+// need a pool and a store, and a metrics package that reached for a database
+// would be instrumenting by owning.
+func (a *App) registerCollectors(log *slog.Logger) error {
+	if a.pool == nil {
+		return nil
+	}
+
+	role := "api"
+	if a.mode == ModeWorker {
+		role = "worker"
+	}
+	if err := a.metrics.Register(metrics.NewPoolCollector(a.pool, role)); err != nil {
+		return fmt.Errorf("register pool collector: %w", err)
+	}
+
+	// Only where the queue runs. A process that does not consume would report
+	// a backlog it has nothing to do with, and two replicas reporting the same
+	// global gauge is a sum that double counts.
+	if a.mode.Consumes() {
+		if err := a.metrics.Register(metrics.NewQueueCollector(queue.NewStore(a.pool), log)); err != nil {
+			return fmt.Errorf("register queue collector: %w", err)
+		}
+	}
+	return nil
 }
 
 // inflightLimit is the load-shedding cap, or zero when the limiter is off.
@@ -344,7 +436,7 @@ func (a *App) newRepository(cfg *config.Config) (task.Repository, error) {
 		a.pool = pool
 		a.closers = append(a.closers, func() error { pool.Close(); return nil })
 
-		return pgrepo.New(pool), nil
+		return pgrepo.New(pool, a.metrics.Queue), nil
 
 	default:
 		return nil, fmt.Errorf("unknown storage backend %q", cfg.Storage.Backend)
@@ -383,6 +475,8 @@ func (a *App) workers() []Worker {
 	//                   the listener stops accepting. The requests that arrive
 	//                   in that window are still served.
 	//   api             stop accepting, finish what was accepted.
+	//   queue-metrics   drains the pool's completion events. After the pool,
+	//                   so the last job's outcome is still recorded.
 	//   idempotency-purge
 	//   ratelimit-sweeper
 	//                   housekeeping loops; nothing waits on them.
@@ -418,6 +512,12 @@ func (a *App) workers() []Worker {
 	// keys keep being purged even when only workers are up.
 	if a.keysPurge != nil {
 		ws = append(ws, Worker{Name: "idempotency-purge", Run: a.keysPurge.Run})
+	}
+
+	// The queue's own metrics come from its completion events, which is the
+	// only place the wait and the processing time are both known.
+	if a.jobs != nil {
+		ws = append(ws, Worker{Name: "queue-metrics", Run: a.recordJobOutcomes})
 	}
 
 	// The limiter's sweeper evicts idle buckets. It runs wherever the limiter

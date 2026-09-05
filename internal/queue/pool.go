@@ -25,6 +25,8 @@ type PoolOptions struct {
 	Logger   *slog.Logger
 	// Notify carries wake-ups from LISTEN/NOTIFY. Nil means poll only.
 	Notify <-chan struct{}
+	// Observer receives claim statistics. Nil is fine.
+	Observer Observer
 }
 
 // Pool claims jobs and runs them.
@@ -45,6 +47,9 @@ type Pool struct {
 	// heartbeat reads it; the workers write it.
 	mu       sync.Mutex
 	inflight map[int64]context.CancelFunc
+
+	// obs receives claim statistics; nil when nobody is listening.
+	obs Observer
 
 	// draining stops the claim loop without cancelling running work.
 	draining chan struct{}
@@ -80,6 +85,7 @@ func NewPool(o PoolOptions) (*Pool, error) {
 		log:      log.With(slog.String("component", "queue"), slog.String("worker_id", o.WorkerID)),
 		backoff:  NewBackoff(o.Config.Backoff),
 		notify:   o.Notify,
+		obs:      o.Observer,
 		inflight: make(map[int64]context.CancelFunc),
 		draining: make(chan struct{}),
 		subs:     make(map[int]chan Event),
@@ -191,6 +197,9 @@ func (p *Pool) claimBatch(ctx context.Context, jobs chan<- *Job) bool {
 		return false
 	}
 
+	if p.obs != nil {
+		p.obs.Claimed(len(claimed))
+	}
 	logging.Trace(ctx, "claimed", slog.Int("jobs", len(claimed)), slog.Int("requested", p.cfg.ClaimBatch))
 
 	for _, j := range claimed {
@@ -243,9 +252,14 @@ func (p *Pool) run(ctx context.Context, j *Job) {
 
 	started := time.Now()
 	err := p.invoke(jobCtx, j)
-	outcome := p.finish(ctx, j, err, time.Since(started))
+	took := time.Since(started)
+	outcome := p.finish(ctx, j, err, took)
 
-	p.publish(Event{JobID: j.ID, Kind: j.Kind, Attempt: j.Attempt, Outcome: outcome, Err: err})
+	p.publish(Event{
+		JobID: j.ID, Kind: j.Kind, Attempt: j.Attempt,
+		Outcome: outcome, Err: err,
+		Waited: j.Waited, Took: took,
+	})
 }
 
 // invoke calls the handler, turning a panic into an error.

@@ -1,0 +1,15 @@
+# Dashboards are provisioned from disk, not imported by hand.
+#
+# A dashboard a reviewer has to import is a dashboard the reviewer never sees.
+# These exist the moment `docker compose up` finishes.
+apiVersion: 1
+
+providers:
+  - name: taskapi
+    type: file
+    folder: Task API
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

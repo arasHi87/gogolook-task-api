@@ -23,6 +23,10 @@ func Middleware(l *Limiter) httpx.Middleware {
 			d := l.Allow(id)
 			writeHeaders(w.Header(), d)
 
+			if l.obs != nil {
+				l.obs.RateLimited(d.Tier, d.Allowed)
+			}
+
 			if d.Allowed {
 				next.ServeHTTP(w, r)
 				return

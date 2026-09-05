@@ -1,9 +1,12 @@
 # The local stack.
 #
-# Postgres, a one-shot migration, and the API on top of it. The queue worker,
-# the webhook sink, Prometheus and Grafana join as the milestones that need
-# them land — and `api` and `worker` will run the same image with different
-# subcommands, which is what shows the queue is genuinely decoupled.
+# Postgres, a one-shot migration, the API and the worker on top of it, a
+# webhook receiver that can be told to misbehave, and the Prometheus/Grafana
+# pair that watches all of it.
+#
+# `api` and `worker` run the same image with different subcommands, which is
+# what shows the queue is genuinely decoupled: kill the worker and the API
+# keeps serving, kill the API and the worker keeps draining.
 name: taskapi
 
 x-image: &image
@@ -167,5 +170,65 @@ services:
     cap_drop:
       - ALL
 
+  # Scrapes both processes on their admin port, evaluates the alert rules, and
+  # is the datasource the provisioned dashboards read. Pinned to 3.x for native
+  # histogram support, which the service emits alongside the classic buckets.
+  prometheus:
+    image: prom/prometheus:v3.8.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=6h
+      # Native histograms are what the service emits beside the classic
+      # buckets; without this they are ignored on ingest.
+      - --enable-feature=native-histograms
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9092}:9090"
+    depends_on:
+      - api
+      - worker
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # Anonymous access with the Admin role, because this is a demo stack on a
+  # laptop and a login screen between a reviewer and the dashboards is a
+  # dashboard nobody looks at. It is the one deliberate exception to every
+  # other hardening choice here, and it stays inside the compose network.
+  grafana:
+    image: grafana/grafana:12.3.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+      # Opens on the queue dashboard, because that is the one that shows the
+      # part of this system worth looking at.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/queue-health.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
 volumes:
   pgdata:
+  prometheus-data:
+  grafana-data:

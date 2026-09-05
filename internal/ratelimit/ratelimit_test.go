@@ -45,7 +45,7 @@ func TestQuotaIsPerTier(t *testing.T) {
 		t.Run(tc.tier, func(t *testing.T) {
 			t.Parallel()
 
-			l := ratelimit.New(testConfig(), nil)
+			l := ratelimit.New(testConfig(), nil, nil)
 			id := identity("c", tc.tier, "key-"+tc.tier)
 
 			allowed := 0
@@ -68,7 +68,7 @@ func TestQuotaIsPerTier(t *testing.T) {
 func TestBucketsAreIndependent(t *testing.T) {
 	t.Parallel()
 
-	l := ratelimit.New(testConfig(), nil)
+	l := ratelimit.New(testConfig(), nil, nil)
 	noisy := identity(auth.Anonymous, config.TierAnonymous, "203.0.113.1")
 	quiet := identity(auth.Anonymous, config.TierAnonymous, "203.0.113.2")
 
@@ -85,7 +85,7 @@ func TestBucketsAreIndependent(t *testing.T) {
 func TestATierChangeRebuildsTheBucket(t *testing.T) {
 	t.Parallel()
 
-	l := ratelimit.New(testConfig(), nil)
+	l := ratelimit.New(testConfig(), nil, nil)
 	key := "shared-key"
 
 	for range 5 {
@@ -110,7 +110,7 @@ func TestIdleBucketsAreEvicted(t *testing.T) {
 	cfg := testConfig()
 	cfg.KeyTTL = config.Duration(10 * time.Minute)
 
-	l := ratelimit.New(cfg, nil)
+	l := ratelimit.New(cfg, nil, nil)
 	clock := time.Now()
 	ratelimit.SetClock(l, func() time.Time { return clock })
 
@@ -141,7 +141,7 @@ func TestIdleBucketsAreEvicted(t *testing.T) {
 func TestHeadersAreOnEveryResponse(t *testing.T) {
 	t.Parallel()
 
-	l := ratelimit.New(testConfig(), nil)
+	l := ratelimit.New(testConfig(), nil, nil)
 	srv := httptest.NewServer(ratelimit.Middleware(l)(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })))
 	defer srv.Close()
@@ -179,7 +179,7 @@ func TestRemainingNeverExceedsTheLimit(t *testing.T) {
 	// The shipped defaults, where burst is twice the rate.
 	cfg.Tiers.Anonymous = config.Quota{Rate: 10, Burst: 20}
 
-	l := ratelimit.New(cfg, nil)
+	l := ratelimit.New(cfg, nil, nil)
 	d := l.Allow(identity(auth.Anonymous, config.TierAnonymous, "203.0.113.9"))
 
 	if d.Remaining > d.Limit {
@@ -196,7 +196,7 @@ func TestRemainingNeverExceedsTheLimit(t *testing.T) {
 func TestRefusalIs429WithRetryAfter(t *testing.T) {
 	t.Parallel()
 
-	l := ratelimit.New(testConfig(), nil)
+	l := ratelimit.New(testConfig(), nil, nil)
 	srv := httptest.NewServer(ratelimit.Middleware(l)(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })))
 	defer srv.Close()
@@ -239,7 +239,7 @@ func TestInflightShedsBeyondTheLimit(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{}, limit)
 
-	srv := httptest.NewServer(ratelimit.Inflight(limit)(
+	srv := httptest.NewServer(ratelimit.Inflight(limit, nil)(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			entered <- struct{}{}
 			<-release

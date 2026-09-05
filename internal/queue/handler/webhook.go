@@ -25,6 +25,10 @@ import (
 	"github.com/arasHi87/gogolook-task-api/internal/task/pgrepo"
 )
 
+// target names this dependency in the metrics. One constant, so the label on
+// the breaker and the label on the latency histogram cannot drift apart.
+const target = "webhook"
+
 // Webhook delivers task events to a configured endpoint.
 type Webhook struct {
 	url     string
@@ -33,6 +37,7 @@ type Webhook struct {
 	// guard is the timeout/retry/breaker chain. Nil disables it, which is what
 	// a test that wants to observe one raw delivery asks for.
 	guard *resilience.Executor
+	obs   Observer
 }
 
 // Options configure a webhook handler.
@@ -43,6 +48,17 @@ type Options struct {
 	Client *http.Client
 	// Guard is the resilience chain. Nil means deliver directly.
 	Guard *resilience.Executor
+	// Observer records outbound latency and retries. Nil is fine.
+	Observer Observer
+}
+
+// Observer receives outbound call statistics, for metrics.
+//
+// An interface declared here and satisfied elsewhere, so this package never
+// imports the metrics registry.
+type Observer interface {
+	Request(target, result string, took time.Duration)
+	Retry(target string)
 }
 
 // NewWebhook returns a handler that POSTs events to url.
@@ -56,7 +72,7 @@ func NewWebhook(o Options) *Webhook {
 	if client == nil {
 		client = &http.Client{Timeout: o.Timeout}
 	}
-	return &Webhook{url: o.URL, client: client, timeout: o.Timeout, guard: o.Guard}
+	return &Webhook{url: o.URL, client: client, timeout: o.Timeout, guard: o.Guard, obs: o.Observer}
 }
 
 // IsDependencyFailure decides what the circuit breaker counts.
@@ -125,10 +141,17 @@ func (w *Webhook) deliver(ctx context.Context, req *http.Request) error {
 		return w.send(req)
 	}
 
-	// The request body is a bytes.Reader, and a retry has to start from the
-	// beginning of it. GetBody is what http.Client uses to rewind; setting it
-	// here is what makes the retry policy above actually able to retry.
-	err := w.guard.Run(func() error { return w.send(req.Clone(ctx)) })
+	// Attempts are counted here rather than inferred from the retry policy,
+	// because only this closure knows how many times it was actually called —
+	// the policy can stop early on an open circuit or an exhausted budget.
+	attempts := 0
+	err := w.guard.Run(func() error {
+		attempts++
+		if attempts > 1 && w.obs != nil {
+			w.obs.Retry(target)
+		}
+		return w.send(req.Clone(ctx))
+	})
 
 	switch {
 	case errors.Is(err, circuitbreaker.ErrOpen):
@@ -144,16 +167,43 @@ func (w *Webhook) deliver(ctx context.Context, req *http.Request) error {
 	}
 }
 
-// send performs one attempt.
+// send performs one attempt, and records how it went.
+//
+// Timed here rather than around the whole chain, so the histogram measures the
+// dependency rather than our own retry backoff — a p99 that includes the sleep
+// between attempts describes the policy, not the endpoint.
 func (w *Webhook) send(req *http.Request) error {
+	started := time.Now()
 	resp, err := w.client.Do(req)
 	if err != nil {
 		// A transport failure is the dependency's problem, not the job's.
+		w.observe("error", time.Since(started))
 		return apperr.Wrap(apperr.Unavailable, err, "webhook delivery failed")
 	}
 	defer resp.Body.Close() //nolint:errcheck // response body is discarded
 
-	return classify(resp.StatusCode)
+	outcome := classify(resp.StatusCode)
+	w.observe(resultOf(outcome), time.Since(started))
+	return outcome
+}
+
+func (w *Webhook) observe(result string, took time.Duration) {
+	if w.obs != nil {
+		w.obs.Request(target, result, took)
+	}
+}
+
+// resultOf reduces an outcome to a bounded label. Three values, not the error
+// text: an error string as a label is unbounded and attacker-influenced.
+func resultOf(err error) string {
+	switch {
+	case err == nil:
+		return "success"
+	case queue.IsTerminal(err):
+		return "rejected"
+	default:
+		return "failure"
+	}
 }
 
 // classify turns a response status into an outcome.

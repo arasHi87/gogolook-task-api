@@ -116,7 +116,7 @@ func runQueue(
 	}()
 
 	if maintain {
-		m := queue.NewMaintenance(pool, store, cfg, testLogger())
+		m := queue.NewMaintenance(pool, store, cfg, testLogger(), nil)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

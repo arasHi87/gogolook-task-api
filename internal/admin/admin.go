@@ -60,12 +60,14 @@ func (h *Handler) StartDraining() { h.draining.Store(true) }
 // Draining reports whether shutdown has begun.
 func (h *Handler) Draining() bool { return h.draining.Load() }
 
-// Mux returns the admin routes.
-func (h *Handler) Mux() http.Handler {
+// Mux returns the admin routes: health, readiness, version, and whatever of
+// the debug surface d turns on.
+func (h *Handler) Mux(d Debug) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 	mux.HandleFunc("GET /version", h.version)
+	h.register(mux, d)
 	return mux
 }
 

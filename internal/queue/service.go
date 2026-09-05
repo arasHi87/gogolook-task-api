@@ -24,10 +24,11 @@ type Maintenance struct {
 	cfg     config.Queue
 	log     *slog.Logger
 	backoff Backoff
+	obs     Observer
 }
 
-// NewMaintenance wires the maintenance loops.
-func NewMaintenance(pool *pgxpool.Pool, store *Store, cfg config.Queue, log *slog.Logger) *Maintenance {
+// NewMaintenance wires the maintenance loops. obs may be nil.
+func NewMaintenance(pool *pgxpool.Pool, store *Store, cfg config.Queue, log *slog.Logger, obs Observer) *Maintenance {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -37,6 +38,7 @@ func NewMaintenance(pool *pgxpool.Pool, store *Store, cfg config.Queue, log *slo
 		cfg:     cfg,
 		log:     log.With(slog.String("component", "queue-maintenance")),
 		backoff: NewBackoff(cfg.Backoff),
+		obs:     obs,
 	}
 }
 
@@ -83,6 +85,9 @@ func (m *Maintenance) Sweep(ctx context.Context) {
 		retryable, discarded, err := m.store.Reap(ctx, m.backoff, m.cfg.MaxAttempts)
 		if err != nil {
 			return err
+		}
+		if m.obs != nil {
+			m.obs.LeasesExpired(retryable, discarded)
 		}
 		if retryable+discarded > 0 {
 			// A lease expiring means a worker died or wedged holding a job.

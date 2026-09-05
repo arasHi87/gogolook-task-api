@@ -73,6 +73,11 @@ Three decisions do most of the work:
 | `TestATokenBuysTheStandardQuota` | the quota follows the token, and the two tiers do not share a bucket |
 | `TestTheDefaultModeNeverRejects` | no token, a stale token and a valid one all get served |
 | `TestTheBreakerOpensAndTheJobsSurviveIt` | a dead dependency opens the circuit, the jobs snooze with their budget intact, and every change is delivered when it returns |
+| `TestTheAdminSurfaceIsOnTheAdminPort` | `/metrics`, `/debug/config`, `/debug/log-level` and pprof answer on 9090 and **not** on 8080 |
+| `TestTheMetricsMatchWhatTheAlertsQuery` | every series the alert rules and dashboards read is actually emitted, and no task id appears in a label |
+| `TestOnlyTheConsumerReportsTheBacklog` | the worker publishes the queue gauges and the api does not, so two replicas cannot double count |
+| `TestTheLogLevelCanBeChangedAtRuntime` | verbosity moves without a restart, and an unknown level is refused |
+| `TestTheEffectiveConfigIsServedWithSecretsMasked` | the dump reflects the environment it started with, and the DSN password is not in it |
 
 ## What it deliberately does not cover
 
@@ -104,6 +109,16 @@ any retry.
 **A response writer connect-go refused to use.** The capturing writer did not
 implement `http.Flusher`, which connect type-asserts. Every write returned 500
 the moment the real transcoder was behind it.
+
+**Ten dashboard panels that would have drawn nothing.** Five queried metrics
+that were defined and never written — outbound latency, retries, config
+reloads, and two database counters that would have needed a pgx tracer nobody
+had written. The other five queried metrics that legitimately have no series on
+a healthy system, so the panel read "No data" where it should have read zero.
+Prometheus also stored the native histograms and dropped the classic buckets,
+which silently emptied every `_bucket` query including the latency SLO rule.
+`task dashboards:check` runs every panel query against the live stack and is
+what found all of it.
 
 **A circuit breaker that never reported recovering.** Every state change logged
 the same message at WARN, and the log throttler collapses repeated WARN records

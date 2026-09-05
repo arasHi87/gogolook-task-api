@@ -27,7 +27,7 @@ import (
 // an overloaded server converts a fast failure into a slow one: the caller
 // waits, times out, retries, and the work already done is thrown away. Load
 // shedding is what keeps the requests that *are* being served fast.
-func Inflight(limit int) httpx.Middleware {
+func Inflight(limit int, obs Observer) httpx.Middleware {
 	// A buffered channel is the semaphore. Its length is the number in flight,
 	// which is also how it stays lock-free.
 	slots := make(chan struct{}, limit)
@@ -38,6 +38,9 @@ func Inflight(limit int) httpx.Middleware {
 			case slots <- struct{}{}:
 				defer func() { <-slots }()
 			default:
+				if obs != nil {
+					obs.Shed()
+				}
 				logging.From(r.Context()).Warn("request shed: too many in flight",
 					slog.Int("limit", limit))
 

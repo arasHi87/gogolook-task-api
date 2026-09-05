@@ -99,7 +99,7 @@ func TestTheWriteAndTheKeyCommitTogether(t *testing.T) {
 	t.Parallel()
 
 	s, pool := newStore(t)
-	repo := pgrepo.New(pool)
+	repo := pgrepo.New(pool, nil)
 
 	t.Run("abandoned", func(t *testing.T) {
 		unit := reserve(t, s, "rolled-back", `{"name":"a"}`)

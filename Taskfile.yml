@@ -110,6 +110,30 @@ tasks:
     cmds:
       - go mod tidy
 
+  tidy:check:
+    desc: Fail if go.mod or go.sum are stale
+    # This is in ci because its absence has a nasty shape: `go build` locally
+    # succeeds from a warm module cache while the Docker build, which starts
+    # from go.sum alone, fails with "missing go.sum entry". The whole test
+    # suite goes green and the image does not exist.
+    #
+    # Compared against a snapshot rather than against git, so the answer is
+    # "tidy would change something" rather than "the working tree is dirty" —
+    # the second is true for every uncommitted edit and says nothing.
+    silent: true
+    cmds:
+      - |
+        snapshot=$(mktemp -d)
+        cp go.mod go.sum "$snapshot/"
+        go mod tidy
+        if ! diff -q "$snapshot/go.mod" go.mod >/dev/null || ! diff -q "$snapshot/go.sum" go.sum >/dev/null; then
+          rm -rf "$snapshot"
+          echo "go.mod/go.sum were stale; 'go mod tidy' has just fixed them — commit the result"
+          exit 1
+        fi
+        rm -rf "$snapshot"
+        echo "go.mod and go.sum are tidy"
+
   generate:
     desc: Regenerate protobuf, Connect handlers and the OpenAPI document
     sources:
@@ -179,9 +203,16 @@ tasks:
         -t taskapi:{{.VERSION}} -t taskapi:latest .
 
   up:
-    desc: Bring the local stack up (postgres, api, worker, prometheus, grafana)
+    desc: Bring the local stack up (postgres, api, worker, sink, prometheus, grafana)
     cmds:
       - "{{.COMPOSE}} up -d --build"
+      - |
+        echo
+        echo "  API        http://localhost:${API_PORT:-8080}/tasks"
+        echo "  docs       http://localhost:${API_PORT:-8080}/docs"
+        echo "  admin      http://localhost:${ADMIN_PORT:-9090}/metrics"
+        echo "  Prometheus http://localhost:${PROMETHEUS_PORT:-9092}"
+        echo "  Grafana    http://localhost:${GRAFANA_PORT:-3000}"
 
   down:
     desc: Tear the stack down, including volumes
@@ -208,6 +239,32 @@ tasks:
     cmds:
       - ./test/demo/breaker.sh
 
+  load:
+    desc: Send a minute of traffic at the running stack, so the graphs have something on them
+    cmds:
+      - |
+        for i in $(seq 1 100); do
+          curl -sf -o /dev/null "localhost:${API_PORT:-8080}/tasks"
+          curl -sf -o /dev/null -X POST "localhost:${API_PORT:-8080}/tasks" \
+            -H 'Content-Type: application/json' \
+            -d "{\"name\":\"load $i\",\"status\":0}"
+          sleep 0.3
+        done
+        echo "done; see http://localhost:${GRAFANA_PORT:-3000}"
+
+  dashboards:check:
+    desc: Run every Grafana panel query against the running Prometheus
+    # A panel that returns nothing reads as "the system is idle" rather than
+    # "this query is wrong", and nobody notices until the incident it was built
+    # for. Needs `task up` and some traffic.
+    cmds:
+      - ./test/dashboards/check.py ${PROMETHEUS_PORT:-9092}
+
+  metrics:
+    desc: Print the service's own metrics, filtered to ours
+    cmds:
+      - curl -s localhost:${ADMIN_PORT:-9090}/metrics | grep -Ev '^(#|go_|process_|promhttp_)' | grep -v ' 0$'
+
   sink:
     desc: Report what the webhook sink has received
     cmds:
@@ -221,6 +278,7 @@ tasks:
   ci:
     desc: Everything CI runs, locally
     cmds:
+      - task: tidy:check
       - task: vet
       - task: lint
       - task: test

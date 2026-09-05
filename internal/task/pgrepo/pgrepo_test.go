@@ -18,7 +18,7 @@ import (
 func newRepo(t *testing.T) (*pgrepo.Repo, *pgxpool.Pool) {
 	t.Helper()
 	pool := testenv.Postgres(t)
-	return pgrepo.New(pool), pool
+	return pgrepo.New(pool, nil), pool
 }
 
 func newService(t *testing.T) (*task.Service, *pgxpool.Pool) {

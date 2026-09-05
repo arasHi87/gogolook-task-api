@@ -1,0 +1,39 @@
+# Scrape configuration for the local stack.
+#
+# Both processes are scraped on their admin port, never the public one: the
+# metrics and pprof live behind the same boundary, and a scrape config that
+# points at :8080 would be documenting the wrong thing even if it worked.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+  external_labels:
+    env: local
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+scrape_configs:
+  - job_name: taskapi
+    metrics_path: /metrics
+    # Keep the classic buckets as well as the native histogram.
+    #
+    # Without this, Prometheus sees a metric that carries both and stores only
+    # the native one — and every _bucket query in the dashboards and in the
+    # latency SLO rule silently returns nothing. The service emits both on
+    # purpose, so that migrating is a scraper setting rather than a rewrite;
+    # this is the scraper setting.
+    always_scrape_classic_histograms: true
+    static_configs:
+      - targets: [api:9090]
+        labels:
+          role: api
+      # The worker publishes the queue backlog gauges; the api does not,
+      # because a process that does not consume would be reporting on a queue
+      # it has nothing to do with.
+      - targets: [worker:9090]
+        labels:
+          role: worker
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]

@@ -18,10 +18,13 @@ import (
 // unrecognised caller gets 401 with the challenge RFC 9110 requires: a 401
 // without WWW-Authenticate tells the client it needs credentials but not what
 // kind, which is how a working client and a broken one look the same.
-func Middleware(r *Resolver) httpx.Middleware {
+func Middleware(r *Resolver, obs Observer) httpx.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			id, ok := r.Resolve(req)
+			if obs != nil {
+				obs.Authenticated(outcome(id, ok))
+			}
 			if !ok {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="`+r.Realm()+`"`)
 				httpx.WriteProblem(w, req, http.StatusUnauthorized,
@@ -40,6 +43,24 @@ func Middleware(r *Resolver) httpx.Middleware {
 			))
 			next.ServeHTTP(w, req.WithContext(ctx))
 		})
+	}
+}
+
+// Observer receives resolution outcomes, for metrics. Declared here and
+// satisfied elsewhere, so this package never imports the metrics registry.
+type Observer interface {
+	Authenticated(result string)
+}
+
+// outcome names how the caller was resolved, in three bounded values.
+func outcome(id Identity, ok bool) string {
+	switch {
+	case !ok:
+		return "rejected"
+	case id.IsAnonymous():
+		return "anonymous"
+	default:
+		return "authenticated"
 	}
 }
 

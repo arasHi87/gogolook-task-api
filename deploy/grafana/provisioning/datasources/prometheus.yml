@@ -1,0 +1,17 @@
+# The datasource, provisioned rather than clicked.
+#
+# The uid is fixed and every dashboard references it by that literal. A
+# generated uid means the dashboards import with "datasource not found", which
+# is the usual reason a provisioned Grafana looks broken on first run.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 5s
+      httpMethod: POST

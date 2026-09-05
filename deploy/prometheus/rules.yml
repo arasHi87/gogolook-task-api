@@ -1,0 +1,227 @@
+# Alerting rules.
+#
+# Two families, and they answer different questions.
+#
+# The SLO burn-rate alerts say "we are spending the error budget faster than the
+# month allows". They are multi-window and multi-burn-rate, out of the Google
+# SRE workbook, and the shape is the point: a single-window alert either fires
+# on a five-minute blip or arrives six hours after the incident ended. Two
+# windows that must both be burning kills the flapping, and the short window is
+# always a twelfth of the long one so the alert clears promptly when the
+# incident does.
+#
+# The operational alerts say "a specific mechanism has stopped working". They
+# are not budget-based because there is no budget for a queue nobody is serving.
+#
+# Availability SLO: 99.9% over 30 days, which is 43m12s of error budget.
+# Latency SLO: p99 under 500ms.
+groups:
+  - name: taskapi-slo
+    rules:
+      # Recording rules first, so every burn-rate expression below reads the
+      # same ratio rather than restating it four times with a different window
+      # and one typo.
+      #
+      # `or vector(0)` on the numerator, because sum() over no matching series
+      # returns nothing rather than zero — so a service with no 5xx at all
+      # produces an empty ratio, and the panel reads "No data" where it should
+      # read 0%. clamp_min on the denominator stops a division by zero when no
+      # traffic has arrived yet.
+      - record: job:http_error_ratio:rate5m
+        expr: |
+          (sum(rate(http_server_requests_total{status=~"5.."}[5m])) or vector(0))
+            /
+          clamp_min(sum(rate(http_server_requests_total[5m])), 1e-9)
+      - record: job:http_error_ratio:rate30m
+        expr: |
+          (sum(rate(http_server_requests_total{status=~"5.."}[30m])) or vector(0))
+            /
+          clamp_min(sum(rate(http_server_requests_total[30m])), 1e-9)
+      - record: job:http_error_ratio:rate1h
+        expr: |
+          (sum(rate(http_server_requests_total{status=~"5.."}[1h])) or vector(0))
+            /
+          clamp_min(sum(rate(http_server_requests_total[1h])), 1e-9)
+      - record: job:http_error_ratio:rate2h
+        expr: |
+          (sum(rate(http_server_requests_total{status=~"5.."}[2h])) or vector(0))
+            /
+          clamp_min(sum(rate(http_server_requests_total[2h])), 1e-9)
+      - record: job:http_error_ratio:rate6h
+        expr: |
+          (sum(rate(http_server_requests_total{status=~"5.."}[6h])) or vector(0))
+            /
+          clamp_min(sum(rate(http_server_requests_total[6h])), 1e-9)
+      - record: job:http_error_ratio:rate1d
+        expr: |
+          (sum(rate(http_server_requests_total{status=~"5.."}[1d])) or vector(0))
+            /
+          clamp_min(sum(rate(http_server_requests_total[1d])), 1e-9)
+      - record: job:http_error_ratio:rate3d
+        expr: |
+          (sum(rate(http_server_requests_total{status=~"5.."}[3d])) or vector(0))
+            /
+          clamp_min(sum(rate(http_server_requests_total[3d])), 1e-9)
+
+      # 14.4x burn: 2% of a 30-day budget in one hour. At this rate the whole
+      # month's budget is gone in about two days.
+      - alert: ErrorBudgetBurningFast
+        expr: |
+          job:http_error_ratio:rate1h > (14.4 * 0.001)
+            and
+          job:http_error_ratio:rate5m > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: page
+          slo: availability
+        annotations:
+          summary: "Error budget burning at 14.4x (2% of the month in 1h)"
+          description: "5xx ratio is {{ $value | humanizePercentage }} over the last hour and still climbing over the last 5 minutes."
+
+      # 6x burn: 5% in six hours, budget gone in about five days.
+      - alert: ErrorBudgetBurning
+        expr: |
+          job:http_error_ratio:rate6h > (6 * 0.001)
+            and
+          job:http_error_ratio:rate30m > (6 * 0.001)
+        for: 15m
+        labels:
+          severity: page
+          slo: availability
+        annotations:
+          summary: "Error budget burning at 6x (5% of the month in 6h)"
+
+      # 3x burn: 10% in a day. A ticket, not a page — it needs attention this
+      # week, not this hour.
+      - alert: ErrorBudgetBurningSlowly
+        expr: |
+          job:http_error_ratio:rate1d > (3 * 0.001)
+            and
+          job:http_error_ratio:rate2h > (3 * 0.001)
+        for: 1h
+        labels:
+          severity: ticket
+          slo: availability
+        annotations:
+          summary: "Error budget burning at 3x (10% of the month in 1d)"
+
+      - alert: ErrorBudgetLeaking
+        expr: |
+          job:http_error_ratio:rate3d > (1 * 0.001)
+            and
+          job:http_error_ratio:rate6h > (1 * 0.001)
+        for: 3h
+        labels:
+          severity: ticket
+          slo: availability
+        annotations:
+          summary: "Error budget burning at 1x (10% of the month in 3d)"
+
+      - alert: LatencySLOBreached
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(http_server_request_duration_seconds_bucket[30m]))
+          ) > 0.5
+        for: 15m
+        labels:
+          severity: ticket
+          slo: latency
+        annotations:
+          summary: "p99 latency is above the 500ms objective"
+
+  - name: taskapi-operational
+    rules:
+      # The queue's primary signal, and the reason it is age rather than depth:
+      # ten thousand jobs that drain in twenty seconds is fine, and five stuck
+      # for an hour is an outage. Depth reports the first as the emergency.
+      #
+      # It catches what depth cannot — a poison job blocking a partition, every
+      # worker wedged on a hung dependency, and a deploy that forgot to start
+      # the consumer at all.
+      - alert: QueueNotBeingServed
+        expr: max(job_queue_oldest_pending_age_seconds) > 300
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "The oldest pending job is {{ $value | humanizeDuration }} old"
+          description: "Nothing is draining the queue. Check that a worker is running and that the webhook target is reachable."
+
+      # Retries eating the queue. A quarter of all outcomes being retries means
+      # the work is not progressing, whatever the throughput graph says.
+      - alert: RetryStorm
+        expr: |
+          sum(rate(jobs_retried_total[5m]))
+            /
+          clamp_min(sum(rate(jobs_processed_total[5m])), 1e-9) > 0.25
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of job outcomes are retries"
+
+      # Any lease expiring means a worker died or wedged while holding work. It
+      # is self-healing, which is why it is a ticket, but it is never routine.
+      - alert: WorkersDying
+        expr: sum(rate(job_leases_expired_total[15m])) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The reaper is reclaiming leases: a worker is crashing or wedging"
+
+      - alert: JobsReachingTheDeadLetter
+        expr: sum(rate(dead_letter_jobs_total[15m])) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Jobs are exhausting their attempts and being discarded"
+
+      - alert: CircuitBreakerOpen
+        expr: max by (name) (circuit_breaker_state) == 2
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The {{ $labels.name }} circuit has been open for 5 minutes"
+          description: "The dependency is failing and calls are being refused. Jobs are snoozing rather than failing, so nothing is lost yet."
+
+      # Sustained shedding is the service refusing work it cannot do. It is the
+      # limiter working correctly and is still something a human should see.
+      - alert: SustainedLoadShedding
+        expr: sum(rate(http_server_inflight_rejected_total[5m])) > 1
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Requests are being shed by the in-flight limiter"
+
+      # The bucket map is the one structure that would grow without bound if
+      # the TTL eviction ever broke.
+      - alert: RateLimitKeysNotEvicted
+        expr: max(ratelimit_active_keys) > 100000
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The rate limiter is holding {{ $value }} buckets; eviction may have stopped"
+
+      - alert: DatabasePoolSaturated
+        expr: |
+          max by (pool) (db_pool_connections{state="acquired"})
+            /
+          clamp_min(max by (pool) (db_pool_connections{state="max"}), 1) > 0.9
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The {{ $labels.pool }} pool is above 90% utilisation"
+
+      - alert: TargetDown
+        expr: up{job="taskapi"} == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.instance }} ({{ $labels.role }}) is not being scraped"

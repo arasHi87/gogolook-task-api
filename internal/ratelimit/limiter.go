@@ -45,6 +45,7 @@ import (
 type Limiter struct {
 	cfg config.RateLimit
 	log *slog.Logger
+	obs Observer
 
 	mu      sync.Mutex
 	buckets map[string]*bucket
@@ -60,14 +61,26 @@ type bucket struct {
 	seen    time.Time
 }
 
-// New builds a limiter from configuration.
-func New(cfg config.RateLimit, log *slog.Logger) *Limiter {
+// Observer receives limiter events, for metrics.
+//
+// An interface declared here and satisfied elsewhere, so this package never
+// imports the metrics registry: instrumentation must not be able to make the
+// thing it instruments depend on it.
+type Observer interface {
+	RateLimited(tier string, allowed bool)
+	ActiveKeys(n int)
+	Shed()
+}
+
+// New builds a limiter from configuration. obs may be nil.
+func New(cfg config.RateLimit, log *slog.Logger, obs Observer) *Limiter {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Limiter{
 		cfg:     cfg,
 		log:     log.With(slog.String("component", "ratelimit")),
+		obs:     obs,
 		buckets: map[string]*bucket{},
 		now:     time.Now,
 	}
@@ -185,6 +198,12 @@ func (l *Limiter) Run(ctx context.Context) error {
 		slog.Duration("sweep", l.cfg.SweepInterval.D()),
 		slog.Int("global_inflight", l.cfg.GlobalInflight))
 
+	// Published before the first tick. Reporting only after a sweep means the
+	// series does not exist for the first minute of a process's life, and a
+	// panel that reads "No data" during a deploy is the panel nobody trusts
+	// afterwards.
+	l.report()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -194,7 +213,19 @@ func (l *Limiter) Run(ctx context.Context) error {
 			if n := l.Sweep(); n > 0 {
 				logging.Trace(ctx, "idle rate-limit buckets evicted", slog.Int("count", n))
 			}
+			// Reported after the sweep rather than on a gauge someone updates
+			// on every request: this is the number that would grow without
+			// bound if the eviction ever broke, so it is worth watching from
+			// the place that does the evicting.
+			l.report()
 		}
+	}
+}
+
+// report publishes the bucket count.
+func (l *Limiter) report() {
+	if l.obs != nil {
+		l.obs.ActiveKeys(l.Len())
 	}
 }
 

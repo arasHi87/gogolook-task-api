@@ -25,10 +25,21 @@ import (
 // Repo implements task.Repository over Postgres.
 type Repo struct {
 	pool *pgxpool.Pool
+	obs  Observer
 }
 
 // New returns a repository over pool.
-func New(pool *pgxpool.Pool) *Repo { return &Repo{pool: pool} }
+func New(pool *pgxpool.Pool, obs Observer) *Repo { return &Repo{pool: pool, obs: obs} }
+
+// Observer receives enqueue outcomes, for metrics.
+//
+// It is here rather than in the outbox because only this layer knows the job
+// kind, and it is an interface rather than a metrics import because a
+// repository that depended on the metrics registry would be instrumented by
+// coupling.
+type Observer interface {
+	Enqueued(kind, outcome string)
+}
 
 var _ task.Repository = (*Repo)(nil)
 
@@ -191,12 +202,18 @@ func (r *Repo) write(
 	}
 
 	payload := eventFor(event, t)
-	if _, err := outbox.Enqueue(ctx, tx, outbox.Job{
+	inserted, err := outbox.Enqueue(ctx, tx, outbox.Job{
 		Kind:      JobKind,
 		Payload:   payload,
 		UniqueKey: payload.ID(),
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
+	}
+	if r.obs != nil {
+		// A conflict is not an error, it is the deduplication working, and a
+		// counter is the only way anyone finds out it happened.
+		r.obs.Enqueued(JobKind, outcomeOf(inserted))
 	}
 
 	notify := func(ctx context.Context) {
@@ -301,3 +318,10 @@ func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 var _ interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 } = (*pgxpool.Pool)(nil)
+
+func outcomeOf(inserted bool) string {
+	if inserted {
+		return "inserted"
+	}
+	return "deduped"
+}

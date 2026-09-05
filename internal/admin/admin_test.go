@@ -38,7 +38,7 @@ func TestHealthzIgnoresDependencies(t *testing.T) {
 		Probe: func(context.Context) error { return errors.New("connection refused") },
 	})
 
-	resp, body := get(t, h.Mux(), "/healthz")
+	resp, body := get(t, h.Mux(admin.Debug{}), "/healthz")
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 with a failing dependency", resp.StatusCode)
 	}
@@ -55,7 +55,7 @@ func TestReadyzReportsEachCheck(t *testing.T) {
 		admin.Check{Name: "queue", Probe: func(context.Context) error { return errors.New("boom") }},
 	)
 
-	resp, body := get(t, h.Mux(), "/readyz")
+	resp, body := get(t, h.Mux(admin.Debug{}), "/readyz")
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
 	}
@@ -82,7 +82,7 @@ func TestReadyzDoesNotLeakProbeErrors(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
-	h.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	h.Mux(admin.Debug{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 
 	if body := rec.Body.String(); strings.Contains(body, "password") || strings.Contains(body, "taskapi") {
 		t.Errorf("the probe error leaked into the response: %s", body)
@@ -92,7 +92,7 @@ func TestReadyzDoesNotLeakProbeErrors(t *testing.T) {
 func TestReadyzWithNoChecksIsReady(t *testing.T) {
 	t.Parallel()
 
-	resp, body := get(t, admin.New().Mux(), "/readyz")
+	resp, body := get(t, admin.New().Mux(admin.Debug{}), "/readyz")
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200: nothing can be down", resp.StatusCode)
 	}
@@ -115,7 +115,7 @@ func TestDrainingFlipsReadinessButNotLiveness(t *testing.T) {
 		t.Fatal("StartDraining did not take effect")
 	}
 
-	resp, body := get(t, h.Mux(), "/readyz")
+	resp, body := get(t, h.Mux(admin.Debug{}), "/readyz")
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("readyz = %d while draining, want 503", resp.StatusCode)
 	}
@@ -125,7 +125,7 @@ func TestDrainingFlipsReadinessButNotLiveness(t *testing.T) {
 
 	// Still alive: the process is finishing work, and killing it now would
 	// drop exactly the requests the drain exists to protect.
-	resp, _ = get(t, h.Mux(), "/healthz")
+	resp, _ = get(t, h.Mux(admin.Debug{}), "/healthz")
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("healthz = %d while draining, want 200", resp.StatusCode)
 	}
@@ -151,7 +151,7 @@ func TestReadyzBoundsSlowProbes(t *testing.T) {
 	})
 
 	started := time.Now()
-	resp, _ := get(t, h.Mux(), "/readyz")
+	resp, _ := get(t, h.Mux(admin.Debug{}), "/readyz")
 	elapsed := time.Since(started)
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
@@ -165,7 +165,7 @@ func TestReadyzBoundsSlowProbes(t *testing.T) {
 func TestVersionReportsBuildInfo(t *testing.T) {
 	t.Parallel()
 
-	resp, body := get(t, admin.New().Mux(), "/version")
+	resp, body := get(t, admin.New().Mux(admin.Debug{}), "/version")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -183,7 +183,7 @@ func TestResponsesAreNotCacheable(t *testing.T) {
 	h := admin.New()
 	for _, path := range []string{"/healthz", "/readyz", "/version"} {
 		rec := httptest.NewRecorder()
-		h.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		h.Mux(admin.Debug{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 			t.Errorf("%s Cache-Control = %q, want no-store", path, got)
 		}
@@ -195,7 +195,7 @@ func TestOnlyGETIsRouted(t *testing.T) {
 
 	h := admin.New()
 	rec := httptest.NewRecorder()
-	h.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/healthz", nil))
+	h.Mux(admin.Debug{}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/healthz", nil))
 	if rec.Code == http.StatusOK {
 		t.Error("POST /healthz was accepted")
 	}

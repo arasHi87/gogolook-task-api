@@ -15,7 +15,7 @@ func serve(t *testing.T, mode, token string) (*http.Response, auth.Identity) {
 	t.Helper()
 
 	var seen auth.Identity
-	h := auth.Middleware(auth.NewResolver(testAuth(mode), 0))(
+	h := auth.Middleware(auth.NewResolver(testAuth(mode), 0), nil)(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			seen = auth.From(r.Context())
 			w.WriteHeader(http.StatusOK)

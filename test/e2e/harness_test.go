@@ -1,7 +1,9 @@
 package e2e
 
 import (
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,6 +163,55 @@ func (h *harness) startWorker() {
 func (h *harness) restartWorker() {
 	h.t.Helper()
 	h.startWorker()
+}
+
+// adminURL addresses the api process's private listener.
+func (h *harness) adminURL(path string) string {
+	h.t.Helper()
+	return "http://" + h.api.addr("admin") + path
+}
+
+// publicURL addresses the api process's public listener.
+func (h *harness) publicURL(path string) string {
+	h.t.Helper()
+	return "http://" + h.api.addr("api") + path
+}
+
+// get fetches a URL and returns the status and the body.
+func (h *harness) get(url string) (int, string) {
+	h.t.Helper()
+	return h.request(http.MethodGet, url, "")
+}
+
+// put sends a plain-text body, which is what the log-level knob takes.
+func (h *harness) put(url, body string) (int, string) {
+	h.t.Helper()
+	return h.request(http.MethodPut, url, body)
+}
+
+func (h *harness) request(method, url, body string) (int, string) {
+	h.t.Helper()
+
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(h.t.Context(), method, url, reader)
+	if err != nil {
+		h.t.Fatalf("%s %s: %v", method, url, err)
+	}
+
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		h.t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // fully read below
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.t.Fatalf("%s %s: read body: %v", method, url, err)
+	}
+	return resp.StatusCode, string(raw)
 }
 
 // awaitReady polls the process's own readiness endpoint.

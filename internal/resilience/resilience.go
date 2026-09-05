@@ -62,6 +62,28 @@ type Options struct {
 	// down a healthy dependency, because our malformed payload looks exactly
 	// like their outage.
 	IsFailure func(error) bool
+
+	// Observer receives state changes, for metrics. Nil is fine.
+	Observer Observer
+}
+
+// Observer receives circuit events. An interface declared here and satisfied
+// elsewhere, so this package never imports the metrics registry.
+type Observer interface {
+	BreakerState(name, from, to string, state float64)
+}
+
+// stateValue encodes a state as the number a gauge can hold, ordered by
+// severity so that max-over-time is still meaningful on a timeline panel.
+func stateValue(s circuitbreaker.State) float64 {
+	switch s {
+	case circuitbreaker.OpenState:
+		return 2
+	case circuitbreaker.HalfOpenState:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // Executor runs a call under the policy chain.
@@ -87,6 +109,14 @@ func New(o Options) *Executor {
 	breaker := newBreaker(o, log, isFailure)
 	retry := newRetry(o, isFailure)
 	attempt := timeout.New[any](o.Timeout)
+
+	// Publish the closed state immediately. The gauge is only written on a
+	// transition, so a circuit that has never failed would have no series at
+	// all — and a state-timeline panel showing nothing is indistinguishable
+	// from one whose metric was renamed.
+	if o.Observer != nil {
+		o.Observer.BreakerState(o.Name, "closed", "closed", stateValue(circuitbreaker.ClosedState))
+	}
 
 	// Outermost first. failsafe applies the policies left to right on the way
 	// in, so this reads in the same order as the comment on the package.
@@ -125,6 +155,11 @@ func newBreaker(o Options, log *slog.Logger, isFailure func(error) bool) circuit
 			log.LogAttrs(context.Background(), level, msg,
 				slog.String("from", e.OldState.String()),
 				slog.String("to", e.NewState.String()))
+
+			if o.Observer != nil {
+				o.Observer.BreakerState(o.Name,
+					e.OldState.String(), e.NewState.String(), stateValue(e.NewState))
+			}
 		}).
 		Build()
 }

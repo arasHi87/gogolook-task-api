@@ -24,6 +24,7 @@ import (
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/httpx"
 	"github.com/arasHi87/gogolook-task-api/internal/idempotency"
+	"github.com/arasHi87/gogolook-task-api/internal/metrics"
 	"github.com/arasHi87/gogolook-task-api/internal/ratelimit"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 )
@@ -48,6 +49,10 @@ type Options struct {
 	RateLimit *ratelimit.Limiter
 	// GlobalInflight caps concurrent requests. Zero disables the semaphore.
 	GlobalInflight int
+
+	// Metrics instruments the chain. Nil serves without instrumentation, which
+	// is what the contract test wants.
+	Metrics *metrics.Registry
 
 	// handler replaces the transcoder. Unexported because it exists only so a
 	// test can drive the real middleware chain around a handler that misbehaves
@@ -119,7 +124,9 @@ func (o Options) transcoder() (http.Handler, error) {
 //
 // Outermost first, and the order is load-bearing:
 //
-//	RequestID   before everything, so the id exists for every log line and
+//	Metrics     outermost, so every request is counted — including the ones
+//	            the limiters refuse before any work is done.
+//	RequestID   before everything else, so the id exists for every log line and
 //	            every error body — including the ones Recover writes.
 //	Logger      outside Recover, so a recovered panic is still recorded as the
 //	            500 it became rather than as a request with no outcome.
@@ -142,16 +149,36 @@ func (o Options) transcoder() (http.Handler, error) {
 //	            a replay still passes back out through the logger and comes
 //	            out of the chain looking like any other response.
 func wrap(h http.Handler, o Options) http.Handler {
-	mw := []httpx.Middleware{
+	var mw []httpx.Middleware
+	if o.Metrics != nil {
+		// Outermost, so a request refused by the in-flight limiter or the rate
+		// limiter is still counted. A 429 missing from the request rate is a
+		// hole exactly where the dashboard is being read from.
+		mw = append(mw, o.Metrics.HTTP.Middleware())
+	}
+	mw = append(mw,
 		httpx.RequestID(),
 		httpx.Logger(),
 		httpx.Recover(),
+	)
+
+	// Declared as the interfaces, not as *metrics.Guards. Assigning a nil
+	// *Guards to an interface variable produces an interface that is not nil,
+	// and every `if obs != nil` guard downstream then calls a method on a nil
+	// pointer. Leaving these unset is the only way they are actually nil.
+	var (
+		limits ratelimit.Observer
+		who    auth.Observer
+	)
+	if o.Metrics != nil {
+		limits, who = o.Metrics.Guards, o.Metrics.Guards
 	}
+
 	if o.GlobalInflight > 0 {
-		mw = append(mw, ratelimit.Inflight(o.GlobalInflight))
+		mw = append(mw, ratelimit.Inflight(o.GlobalInflight, limits))
 	}
 	if o.Auth != nil {
-		mw = append(mw, auth.Middleware(o.Auth))
+		mw = append(mw, auth.Middleware(o.Auth, who))
 	}
 	if o.RateLimit != nil {
 		mw = append(mw, ratelimit.Middleware(o.RateLimit))

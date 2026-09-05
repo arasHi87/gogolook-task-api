@@ -50,6 +50,12 @@ type Job struct {
 	Payload     json.RawMessage
 	Attempt     int
 	MaxAttempts int
+	// Waited is how long this job sat between becoming due and being claimed,
+	// measured by the database. It is the latency a producer experiences, and
+	// the one thing queue depth cannot tell you: ten thousand jobs that drain
+	// in twenty seconds and five that have been stuck for an hour look the
+	// same by depth and nothing alike by this.
+	Waited time.Duration
 }
 
 // HandlerFunc runs one job.
@@ -142,4 +148,24 @@ type Event struct {
 	Attempt int
 	Outcome Outcome
 	Err     error
+	// Waited is enqueue-to-claim; Took is claim-to-finalize. Both are on the
+	// event rather than measured by a subscriber, because only the pool knows
+	// where either interval starts.
+	Waited time.Duration
+	Took   time.Duration
+}
+
+// Observer receives the two things only the queue can see.
+//
+// An interface declared here and satisfied by the metrics registry, so the
+// queue never imports it: instrumentation must not be able to make the thing
+// it instruments depend on it.
+type Observer interface {
+	// Claimed is how many jobs one claim returned. Consistently short of the
+	// configured batch is workers contending on SKIP LOCKED, which looks like
+	// nothing else in the metrics.
+	Claimed(n int)
+	// LeasesExpired is what the reaper reclaimed from workers that died or
+	// wedged holding work.
+	LeasesExpired(retryable, discarded int)
 }

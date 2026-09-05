@@ -54,7 +54,8 @@ UPDATE jobs j
        attempted_by     = array_append(j.attempted_by, $1)
   FROM claimed c
  WHERE j.id = c.id
-RETURNING j.id, j.kind, j.payload, j.attempt, j.max_attempts`
+RETURNING j.id, j.kind, j.payload, j.attempt, j.max_attempts,
+          extract(epoch FROM now() - j.scheduled_at)`
 
 // Claim takes up to batch jobs for workerID and stamps a lease on each.
 func (s *Store) Claim(ctx context.Context, workerID string, batch int, lease time.Duration) ([]*Job, error) {
@@ -66,10 +67,18 @@ func (s *Store) Claim(ctx context.Context, workerID string, batch int, lease tim
 
 	jobs := make([]*Job, 0, batch)
 	for rows.Next() {
-		var j Job
-		if err := rows.Scan(&j.ID, &j.Kind, &j.Payload, &j.Attempt, &j.MaxAttempts); err != nil {
+		var (
+			j      Job
+			waited float64
+		)
+		if err := rows.Scan(&j.ID, &j.Kind, &j.Payload, &j.Attempt, &j.MaxAttempts, &waited); err != nil {
 			return nil, fmt.Errorf("queue: scan claimed job: %w", err)
 		}
+		// Computed by the database, not by subtracting timestamps here: the
+		// worker's clock and the database's are not the same clock, and a
+		// queue-wait metric built from two of them measures the skew as often
+		// as it measures the wait.
+		j.Waited = time.Duration(max(waited, 0) * float64(time.Second))
 		jobs = append(jobs, &j)
 	}
 	if err := rows.Err(); err != nil {
@@ -268,3 +277,61 @@ func jsonPayload[T any](j *Job) (T, error) {
 func Unmarshal[T any](j *Job) (T, error) { return jsonPayload[T](j) }
 
 var _ = pgx.ErrNoRows
+
+// statsSQL is the one query the metrics collector runs on scrape.
+//
+// Depth and age together, because neither answers the question alone. Ten
+// thousand jobs that drain in twenty seconds is fine; five jobs stuck for an
+// hour is an outage, and depth reports the first as the emergency. Age is the
+// direct measure of "is the queue actually being served", and it is the signal
+// that catches a poison job blocking a partition, every worker wedged on a
+// hung dependency, and a deploy that forgot to start the consumer.
+//
+// Only the states a job can be waiting in. succeeded and discarded rows are
+// history, and counting them would make the depth gauge grow forever until the
+// purger ran.
+const statsSQL = `
+SELECT kind,
+       state::text,
+       count(*),
+       coalesce(extract(epoch FROM now() - min(scheduled_at)), 0)
+  FROM jobs
+ WHERE state IN ('available', 'scheduled', 'running', 'retryable')
+ GROUP BY kind, state`
+
+// Stat is one row of the queue's backlog.
+type Stat struct {
+	Kind  string
+	State string
+	Count int
+	// OldestAge is how long the oldest job in this state has been due. It is
+	// negative for scheduled jobs whose time has not come, which is correct
+	// and is why the collector clamps rather than the query.
+	OldestAge time.Duration
+}
+
+// Stats reports the backlog, for the metrics collector.
+func (s *Store) Stats(ctx context.Context) ([]Stat, error) {
+	rows, err := s.pool.Query(ctx, statsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("queue: stats: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Stat
+	for rows.Next() {
+		var (
+			st      Stat
+			seconds float64
+		)
+		if err := rows.Scan(&st.Kind, &st.State, &st.Count, &seconds); err != nil {
+			return nil, fmt.Errorf("queue: stats: %w", err)
+		}
+		st.OldestAge = time.Duration(seconds * float64(time.Second))
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("queue: stats: %w", err)
+	}
+	return out, nil
+}
