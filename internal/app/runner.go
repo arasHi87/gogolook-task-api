@@ -38,22 +38,25 @@ func runWorkers(ctx context.Context, log *slog.Logger, workers []Worker, grace t
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 
-	var (
-		wg     sync.WaitGroup
-		errMu  sync.Mutex
-		first  error
-		failed = make(chan struct{})
-		once   sync.Once
-	)
+	failures := newFailureSet()
+	wg := start(runCtx, log, workers, failures)
 
-	record := func(err error) {
-		errMu.Lock()
-		if first == nil {
-			first = err
-		}
-		errMu.Unlock()
-		once.Do(func() { close(failed) })
+	select {
+	case <-ctx.Done():
+		log.Info("shutdown signalled, draining")
+	case <-failures.fired:
+		log.Error("worker failure, draining")
 	}
+
+	if err := drain(ctx, log, workers, wg, cancel, grace); err != nil {
+		failures.record(err)
+	}
+	return failures.first()
+}
+
+// start launches every worker and reports what each one did when it returned.
+func start(ctx context.Context, log *slog.Logger, workers []Worker, failures *failureSet) *sync.WaitGroup {
+	var wg sync.WaitGroup
 
 	for _, w := range workers {
 		wg.Add(1)
@@ -64,36 +67,56 @@ func runWorkers(ctx context.Context, log *slog.Logger, workers []Worker, grace t
 				// a word about which one it was.
 				if r := recover(); r != nil {
 					log.Error("worker panicked", slog.String("worker", w.Name), slog.Any("panic", r))
-					record(fmt.Errorf("%s: panic: %v", w.Name, r))
+					failures.record(fmt.Errorf("%s: panic: %v", w.Name, r))
 				}
 			}()
 
 			log.Debug("worker started", slog.String("worker", w.Name))
-			err := w.Run(runCtx)
+			err := w.Run(ctx)
+
 			switch {
 			case err == nil, errors.Is(err, context.Canceled):
 				log.Debug("worker stopped", slog.String("worker", w.Name))
 			default:
 				log.Error("worker failed", slog.String("worker", w.Name), slog.Any("err", err))
-				record(fmt.Errorf("%s: %w", w.Name, err))
+				failures.record(fmt.Errorf("%s: %w", w.Name, err))
 			}
 		}(w)
 	}
+	return &wg
+}
 
-	select {
-	case <-ctx.Done():
-		log.Info("shutdown signalled, draining")
-	case <-failed:
-		log.Error("worker failure, draining")
+// failureSet keeps the first error and signals once that something went wrong.
+//
+// It exists so the shutdown trigger ("has anything failed?") and the exit code
+// ("what failed first?") are one concept with one lock, instead of a mutex, a
+// channel and a sync.Once threaded through the function that uses them.
+type failureSet struct {
+	mu    sync.Mutex
+	err   error
+	once  sync.Once
+	fired chan struct{}
+}
+
+func newFailureSet() *failureSet {
+	return &failureSet{fired: make(chan struct{})}
+}
+
+// record keeps err if it is the first, and wakes whoever is waiting.
+func (f *failureSet) record(err error) {
+	f.mu.Lock()
+	if f.err == nil {
+		f.err = err
 	}
+	f.mu.Unlock()
+	f.once.Do(func() { close(f.fired) })
+}
 
-	if err := drain(ctx, log, workers, &wg, cancel, grace); err != nil {
-		record(err)
-	}
-
-	errMu.Lock()
-	defer errMu.Unlock()
-	return first
+// first returns the earliest error recorded, or nil.
+func (f *failureSet) first() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.err
 }
 
 // drain walks the worker table in order, giving each a chance to finish what it

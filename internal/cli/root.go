@@ -66,10 +66,7 @@ type booted struct {
 }
 
 // boot performs the configuration and logging bootstrap shared by every run
-// command, and handles --print-config.
-//
-// It returns a nil *booted with a nil error when the command has already done
-// its job and should exit successfully — that is the --print-config path.
+// command: merge the layers, check the result, build the logger.
 func boot(cmd *cobra.Command) (*booted, error) {
 	fs := cmd.Flags()
 
@@ -79,16 +76,6 @@ func boot(cmd *cobra.Command) (*booted, error) {
 	}
 	if err := res.Config.Validate(); err != nil {
 		return nil, err
-	}
-
-	// --print-config dumps the effective merged configuration to stdout, with
-	// secrets masked, and exits. stdout is reserved for machine-readable output
-	// precisely so this can be piped.
-	if config.PrintConfigRequested(fs) {
-		if err := res.Config.WriteYAML(cmd.OutOrStdout()); err != nil {
-			return nil, err
-		}
-		return nil, nil
 	}
 
 	log, err := logging.New(logging.Options{
@@ -107,11 +94,30 @@ func boot(cmd *cobra.Command) (*booted, error) {
 	return &booted{cfg: res.Config, log: log, file: res.File}, nil
 }
 
+// printConfig dumps the effective merged configuration, with secrets masked.
+//
+// It goes to stdout, which is reserved for machine-readable output precisely so
+// this can be piped while the log stream stays on stderr.
+func printConfig(cmd *cobra.Command) error {
+	res, err := config.Load(config.Options{File: config.FilePath(cmd.Flags()), Flags: cmd.Flags()})
+	if err != nil {
+		return err
+	}
+	if err := res.Config.Validate(); err != nil {
+		return err
+	}
+	return res.Config.WriteYAML(cmd.OutOrStdout())
+}
+
 // runMode is the body of serve, worker and all: bootstrap, wire, run until a
 // signal, drain.
 func runMode(cmd *cobra.Command, mode app.Mode) error {
+	if config.PrintConfigRequested(cmd.Flags()) {
+		return printConfig(cmd)
+	}
+
 	b, err := boot(cmd)
-	if err != nil || b == nil {
+	if err != nil {
 		return err
 	}
 

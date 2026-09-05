@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -32,59 +33,79 @@ type MuxOptions struct {
 //
 // One mux, one port, one handler implementation. vanguard reads the same
 // google.api.http annotations the OpenAPI document was generated from and
-// transcodes REST onto the Connect handler, so the routes that are served and
-// the routes that are documented come from one source and cannot drift.
+// transcodes REST onto the Connect handler, so what is served and what is
+// documented come from one source and cannot drift.
 func NewMux(o MuxOptions) (http.Handler, error) {
 	if o.Service == nil {
-		return nil, fmt.Errorf("api: a task service is required")
+		return nil, errors.New("api: a task service is required")
 	}
 
+	routes, err := o.routes()
+	if err != nil {
+		return nil, err
+	}
+	return wrap(routes, o.MaxBodyBytes), nil
+}
+
+// routes assembles the handler tree, before any middleware.
+func (o MuxOptions) routes() (http.Handler, error) {
+	root := o.handler // test seam; nil in every real caller
+	if root == nil {
+		var err error
+		if root, err = o.transcoder(); err != nil {
+			return nil, err
+		}
+	}
+
+	mux := http.NewServeMux()
+	docs.Handler(mux)
+	// Everything else — the eight REST routes and the Connect procedures — is
+	// routed from the proto annotations.
+	mux.Handle("/", root)
+	return mux, nil
+}
+
+// transcoder builds the Connect handler and the REST transcoding in front of
+// it.
+func (o MuxOptions) transcoder() (http.Handler, error) {
 	// protovalidate enforces the constraints declared in the proto: the status
 	// enum, the name length, the uuid format. Declared once, checked here, and
 	// published in the OpenAPI — no hand-written validation to fall out of step.
-	validator := validate.NewInterceptor()
-
 	path, handler := taskv1connect.NewTaskServiceHandler(
 		NewServer(o.Service),
-		connect.WithInterceptors(validator),
+		connect.WithInterceptors(validate.NewInterceptor()),
 		connect.WithCodec(connectJSONCodec{}),
 	)
 
-	transcoder, err := vanguard.NewTranscoder(
+	t, err := vanguard.NewTranscoder(
 		[]*vanguard.Service{vanguard.NewService(path, handler)},
 		vanguard.WithCodec(newJSONCodec),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("api: build transcoder: %w", err)
 	}
+	return t, nil
+}
 
-	mux := http.NewServeMux()
-	docs.Handler(mux)
-	// Everything else — the eight REST routes and the Connect procedures — is
-	// routed by the transcoder from the proto annotations.
-	if o.handler != nil {
-		mux.Handle("/", o.handler) // test seam; see MuxOptions.handler
-	} else {
-		mux.Handle("/", transcoder)
-	}
-
-	// Outermost first, and the order is load-bearing:
-	//
-	//   RequestID   before everything, so the id exists for every log line and
-	//               every error body — including the ones Recover writes.
-	//   Logger      outside Recover, so a recovered panic is still recorded as
-	//               the 500 it became rather than as a request with no outcome.
-	//   Recover     inside both, so a panic in any middleware below it or in
-	//               the handler produces a response instead of a dropped
-	//               connection.
-	//   Deprecation before the handler, because headers must be set before
-	//               anything writes.
-	//   MaxBody     innermost, closest to whatever reads the body.
-	return httpx.Chain(mux,
+// wrap puts the middleware chain around the routes.
+//
+// Outermost first, and the order is load-bearing:
+//
+//	RequestID   before everything, so the id exists for every log line and
+//	            every error body — including the ones Recover writes.
+//	Logger      outside Recover, so a recovered panic is still recorded as the
+//	            500 it became rather than as a request with no outcome.
+//	Recover     inside both, so a panic in any middleware below it or in the
+//	            handler produces a response instead of a dropped connection.
+//	Deprecation before the handler, because headers must be set before anything
+//	            writes.
+//	MaxBody     innermost, closest to whatever reads the body.
+func wrap(h http.Handler, maxBody int64) http.Handler {
+	return httpx.Chain(h,
 		httpx.RequestID(),
 		httpx.Logger(),
 		httpx.Recover(),
 		httpx.Deprecation(),
-		httpx.MaxBody(o.MaxBodyBytes),
-	), nil
+		httpx.MaxBody(maxBody),
+	)
 }

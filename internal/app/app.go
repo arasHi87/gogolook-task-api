@@ -89,17 +89,12 @@ type Options struct {
 }
 
 // New wires the application. It does not start anything; Run does that.
+//
+// Everything that can fail to be built fails here, at startup, rather than on
+// the first request that needs it.
 func New(o Options) (*App, error) {
-	if o.Config == nil {
-		return nil, errors.New("app: config is required")
-	}
-	if o.Logger == nil {
-		return nil, errors.New("app: logger is required")
-	}
-	switch o.Mode {
-	case ModeServe, ModeWorker, ModeAll:
-	default:
-		return nil, fmt.Errorf("app: unknown mode %q", o.Mode)
+	if err := o.validate(); err != nil {
+		return nil, err
 	}
 
 	a := &App{
@@ -118,17 +113,41 @@ func New(o Options) (*App, error) {
 	a.tasks = task.NewService(repo)
 
 	if o.Mode.Runs() {
-		handler, err := api.NewMux(api.MuxOptions{
-			Service:      a.tasks,
-			MaxBodyBytes: o.Config.HTTP.MaxBodyBytes,
-		})
-		if err != nil {
+		if a.apiServer, err = a.newAPIServer(o.Config); err != nil {
 			return nil, err
 		}
-		a.apiServer = newHTTPServer(o.Config.HTTP, handler, o.Logger.Logger, "api")
 	}
-
 	return a, nil
+}
+
+// validate checks the wiring contract. These are programming errors, not
+// operator errors, so they say what the caller got wrong.
+func (o Options) validate() error {
+	switch {
+	case o.Config == nil:
+		return errors.New("app: config is required")
+	case o.Logger == nil:
+		return errors.New("app: logger is required")
+	}
+	switch o.Mode {
+	case ModeServe, ModeWorker, ModeAll:
+		return nil
+	default:
+		return fmt.Errorf("app: unknown mode %q", o.Mode)
+	}
+}
+
+// newAPIServer builds the public listener: the REST contract, the Connect
+// surface, the documentation, and the middleware chain around them.
+func (a *App) newAPIServer(cfg *config.Config) (*http.Server, error) {
+	handler, err := api.NewMux(api.MuxOptions{
+		Service:      a.tasks,
+		MaxBodyBytes: cfg.HTTP.MaxBodyBytes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return newHTTPServer(cfg.HTTP, handler, a.log.Logger, "api"), nil
 }
 
 // newRepository selects the storage backend.

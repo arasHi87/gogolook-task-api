@@ -62,77 +62,35 @@ type Result struct {
 //  3. TASKAPI_* environment
 //  4. --flags (only those the user actually set)
 //
-// Step 4 is where the classic bug lives: merging every flag, set or not, lets
-// pflag's zero defaults silently overwrite the file and the environment,
-// inverting the precedence. posflag.Provider avoids it when it is handed the
-// koanf instance, which is why one is passed here.
+// The body is that list, one line each. Every layer is a function that takes
+// the accumulator and returns what it learned, so the precedence chain is
+// readable as a sequence rather than inferred from a hundred lines of merging.
 func Load(o Options) (*Result, error) {
 	k := koanf.New(delim)
 	res := &Result{}
 
-	// 1. defaults
-	if err := k.Load(structs.Provider(Defaults(), "koanf"), nil); err != nil {
-		return nil, fmt.Errorf("load defaults: %w", err)
+	if err := loadDefaults(k); err != nil {
+		return nil, err
 	}
 	valid := keySet(k.Keys())
 
-	// 2. config.yaml
-	path, err := resolveFile(o.File)
+	file, err := loadFile(k, o.File, valid)
 	if err != nil {
 		return nil, err
 	}
-	if path != "" {
-		fileK := koanf.New(delim)
-		if err := fileK.Load(file.Provider(path), yaml.Parser()); err != nil {
-			return nil, fmt.Errorf("read config %s: %w", path, err)
-		}
-		if err := checkUnknownKeys(path, fileK.Keys(), valid); err != nil {
-			return nil, err
-		}
-		if err := k.Merge(fileK); err != nil {
-			return nil, fmt.Errorf("merge config %s: %w", path, err)
-		}
-		res.File = path
-	}
+	res.File = file
 
-	// 3. environment
-	unknownEnv := map[string]struct{}{}
-	envProvider := env.Provider(delim, env.Opt{
-		Prefix:        EnvPrefix,
-		EnvironFunc:   o.Environ,
-		TransformFunc: envTransform(valid, unknownEnv),
-	})
-	if err := k.Load(envProvider, nil); err != nil {
-		return nil, fmt.Errorf("load environment: %w", err)
+	warnings, err := loadEnv(k, valid, o.Environ)
+	if err != nil {
+		return nil, err
 	}
-	for name := range unknownEnv {
-		res.Warnings = append(res.Warnings,
-			fmt.Sprintf("environment variable %s matches no configuration key and was ignored", name))
-	}
-	sort.Strings(res.Warnings)
+	res.Warnings = warnings
 
-	// 4. flags
-	if o.Flags != nil {
-		p := posflag.ProviderWithValue(o.Flags, delim, k, flagTransform(valid))
-		if err := k.Load(p, nil); err != nil {
-			return nil, fmt.Errorf("load flags: %w", err)
-		}
-		overrides, err := flagOverrides(o.Flags, valid)
-		if err != nil {
-			return nil, err
-		}
-		if len(overrides) > 0 {
-			if err := k.Load(confmap.Provider(overrides, delim), nil); err != nil {
-				return nil, fmt.Errorf("apply flag overrides: %w", err)
-			}
-		}
+	if err := loadFlags(k, o.Flags, valid); err != nil {
+		return nil, err
 	}
-
-	// 5. test overrides
-	if len(o.Overrides) > 0 {
-		if err := k.Load(confmap.Provider(o.Overrides, delim), nil); err != nil {
-			return nil, fmt.Errorf("apply overrides: %w", err)
-		}
+	if err := loadOverrides(k, o.Overrides); err != nil {
+		return nil, err
 	}
 
 	cfg := Defaults()
@@ -141,6 +99,104 @@ func Load(o Options) (*Result, error) {
 	}
 	res.Config = &cfg
 	return res, nil
+}
+
+// loadDefaults is layer 1: the built-in values, which also define the set of
+// valid configuration paths for every layer above.
+func loadDefaults(k *koanf.Koanf) error {
+	if err := k.Load(structs.Provider(Defaults(), "koanf"), nil); err != nil {
+		return fmt.Errorf("load defaults: %w", err)
+	}
+	return nil
+}
+
+// loadFile is layer 2. It returns the path actually read, or "" for none.
+//
+// An unknown key here is fatal rather than ignored: the file is the layer a
+// human edits by hand, so it is the layer most worth being strict in.
+func loadFile(k *koanf.Koanf, requested string, valid keyIndex) (string, error) {
+	path, err := resolveFile(requested)
+	if err != nil || path == "" {
+		return "", err
+	}
+
+	fileK := koanf.New(delim)
+	if err := fileK.Load(file.Provider(path), yaml.Parser()); err != nil {
+		return "", fmt.Errorf("read config %s: %w", path, err)
+	}
+	if err := checkUnknownKeys(path, fileK.Keys(), valid); err != nil {
+		return "", err
+	}
+	if err := k.Merge(fileK); err != nil {
+		return "", fmt.Errorf("merge config %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// loadEnv is layer 3. It returns a warning for each TASKAPI_* variable that
+// matches no configuration key, because a silently-ignored TASKAPI_HTTP_ADDRR
+// is an outage nobody sees coming.
+func loadEnv(k *koanf.Koanf, valid keyIndex, environ func() []string) ([]string, error) {
+	unknown := map[string]struct{}{}
+
+	provider := env.Provider(delim, env.Opt{
+		Prefix:        EnvPrefix,
+		EnvironFunc:   environ,
+		TransformFunc: envTransform(valid, unknown),
+	})
+	if err := k.Load(provider, nil); err != nil {
+		return nil, fmt.Errorf("load environment: %w", err)
+	}
+
+	warnings := make([]string, 0, len(unknown))
+	for name := range unknown {
+		warnings = append(warnings,
+			fmt.Sprintf("environment variable %s matches no configuration key and was ignored", name))
+	}
+	sort.Strings(warnings)
+	return warnings, nil
+}
+
+// loadFlags is layer 4, and it is where the classic precedence bug lives.
+//
+// Merging every flag, set or not, lets pflag's zero defaults overwrite the file
+// and the environment, inverting the whole chain. posflag.Provider avoids it
+// when it is handed the koanf instance, which is why one is passed here.
+func loadFlags(k *koanf.Koanf, fs *pflag.FlagSet, valid keyIndex) error {
+	if fs == nil {
+		return nil
+	}
+
+	provider := posflag.ProviderWithValue(fs, delim, k, flagTransform(valid))
+	if err := k.Load(provider, nil); err != nil {
+		return fmt.Errorf("load flags: %w", err)
+	}
+
+	// The convenience flags (-v, --trace, --set) are not configuration paths,
+	// so they are translated separately and applied last — they are flags, and
+	// flags win.
+	overrides, err := flagOverrides(fs, valid)
+	if err != nil {
+		return err
+	}
+	if len(overrides) == 0 {
+		return nil
+	}
+	if err := k.Load(confmap.Provider(overrides, delim), nil); err != nil {
+		return fmt.Errorf("apply flag overrides: %w", err)
+	}
+	return nil
+}
+
+// loadOverrides applies the test seam, above every real layer.
+func loadOverrides(k *koanf.Koanf, overrides map[string]any) error {
+	if len(overrides) == 0 {
+		return nil
+	}
+	if err := k.Load(confmap.Provider(overrides, delim), nil); err != nil {
+		return fmt.Errorf("apply overrides: %w", err)
+	}
+	return nil
 }
 
 // unmarshal decodes the merged map into cfg. WeaklyTypedInput is on because

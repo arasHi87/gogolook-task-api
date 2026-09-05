@@ -123,8 +123,19 @@ func (s *Store) List(ctx context.Context, q task.ListQuery) (task.Page, error) {
 		return task.Page{}, err
 	}
 
+	matched := s.matching(q)
+	sortNewestFirst(matched)
+	return paginate(matched, q.Limit), nil
+}
+
+// matching collects the tasks a query selects, as copies, under the read lock.
+// The lock is released before sorting, which is the expensive part and does not
+// need it.
+func (s *Store) matching(q task.ListQuery) []*task.Task {
 	s.mu.RLock()
-	matched := make([]*task.Task, 0, len(s.tasks))
+	defer s.mu.RUnlock()
+
+	out := make([]*task.Task, 0, len(s.tasks))
 	for _, t := range s.tasks {
 		if q.Status != nil && t.Status != *q.Status {
 			continue
@@ -132,11 +143,15 @@ func (s *Store) List(ctx context.Context, q task.ListQuery) (task.Page, error) {
 		if !q.Cursor.After(t) {
 			continue
 		}
-		matched = append(matched, t.Clone())
+		out = append(out, t.Clone())
 	}
-	s.mu.RUnlock()
+	return out
+}
 
-	slices.SortFunc(matched, func(a, b *task.Task) int {
+// sortNewestFirst applies the list ordering: created_at descending, with id as
+// the tiebreak so the ordering is total.
+func sortNewestFirst(ts []*task.Task) {
+	slices.SortFunc(ts, func(a, b *task.Task) int {
 		switch {
 		case task.Less(a, b):
 			return -1
@@ -146,15 +161,18 @@ func (s *Store) List(ctx context.Context, q task.ListQuery) (task.Page, error) {
 			return 0
 		}
 	})
+}
 
-	// Fetch one past the page to learn whether another page exists, without a
-	// second count query. The extra row is dropped, not returned.
-	page := task.Page{Tasks: matched}
-	if len(matched) > q.Limit {
-		page.Tasks = matched[:q.Limit]
-		page.Next = task.CursorOf(page.Tasks[len(page.Tasks)-1])
+// paginate cuts the page and works out whether another one exists.
+//
+// Whether there is a next page is answered by having collected one row past the
+// limit, not by a second count query. The extra row is dropped, not returned.
+func paginate(ts []*task.Task, limit int) task.Page {
+	if len(ts) <= limit {
+		return task.Page{Tasks: ts}
 	}
-	return page, nil
+	page := ts[:limit]
+	return task.Page{Tasks: page, Next: task.CursorOf(page[len(page)-1])}
 }
 
 // Len reports how many tasks are stored. Test and demo affordance only.

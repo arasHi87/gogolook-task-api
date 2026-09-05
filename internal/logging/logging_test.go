@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
 )
 
@@ -243,5 +245,51 @@ func TestErrorAttrIsScrubbed(t *testing.T) {
 
 	if s := buf.String(); strings.Contains(s, "hunter2") {
 		t.Errorf("error text leaked a password: %s", s)
+	}
+}
+
+// Both a bad level and a bad format must be reported, not just whichever was
+// checked last.
+func TestNewReportsEveryProblem(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h, err := logging.New(logging.Options{Level: "loud", Format: "interpretive dance", Writer: &buf})
+	if err == nil {
+		t.Fatal("New accepted both a bad level and a bad format")
+	}
+	for _, want := range []string{"loud", "interpretive dance"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error is missing %q:\n%v", want, err)
+		}
+	}
+	if h == nil {
+		t.Fatal("New returned a nil handle")
+	}
+	h.Info("still works")
+	if len(records(t, &buf)) != 1 {
+		t.Error("the fallback logger emitted nothing")
+	}
+}
+
+// The level vocabulary is duplicated in internal/config, which must stay a leaf
+// package. This is the test that holds the two lists together.
+func TestLevelVocabularyMatchesConfig(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		config.LevelError, config.LevelWarn, config.LevelInfo,
+		config.LevelDebug, config.LevelTrace,
+	} {
+		if _, err := logging.ParseLevel(name); err != nil {
+			t.Errorf("config accepts level %q but logging rejects it: %v", name, err)
+		}
+	}
+	for _, name := range []string{
+		config.FormatAuto, config.FormatText, config.FormatJSON,
+	} {
+		if _, err := logging.New(logging.Options{Format: name, Writer: io.Discard}); err != nil {
+			t.Errorf("config accepts format %q but logging rejects it: %v", name, err)
+		}
 	}
 }
