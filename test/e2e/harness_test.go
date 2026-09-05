@@ -39,8 +39,10 @@ type options struct {
 	// noWorker starts the api alone, for tests about the write path that
 	// should not race a consumer draining the queue underneath them.
 	noWorker bool
-	// workerEnv is appended last, so a test can override any queue setting.
+	// workerEnv and apiEnv are appended last, so a test can override any
+	// setting the harness chose.
 	workerEnv []string
+	apiEnv    []string
 }
 
 type option func(*options)
@@ -51,6 +53,11 @@ func withoutWorker() option { return func(o *options) { o.noWorker = true } }
 // withWorkerEnv overrides worker configuration, e.g. a shorter lease.
 func withWorkerEnv(kv ...string) option {
 	return func(o *options) { o.workerEnv = append(o.workerEnv, kv...) }
+}
+
+// withAPIEnv overrides api configuration, e.g. a small rate-limit quota.
+func withAPIEnv(kv ...string) option {
+	return func(o *options) { o.apiEnv = append(o.apiEnv, kv...) }
 }
 
 // start brings a system up and returns once it is serving.
@@ -73,7 +80,7 @@ func start(t *testing.T, opts ...option) *harness {
 		DB:   testenv.PostgresAt(t, dsn),
 	}
 
-	h.api = startProcess(t, "api", []string{"serve"}, h.baseEnv("api"))
+	h.api = startProcess(t, "api", []string{"serve"}, append(h.baseEnv("api"), o.apiEnv...))
 	h.API = newClient(t, "http://"+h.api.addr("api")+"/api/v1")
 	h.awaitReady(h.api)
 
@@ -109,6 +116,12 @@ func (h *harness) baseEnv(instance string) []string {
 		// the harness reads it back. Nothing here competes for a fixed port.
 		"TASKAPI_HTTP_ADDR=127.0.0.1:0",
 		"TASKAPI_ADMIN_ADDR=127.0.0.1:0",
+		// The anonymous quota is raised out of the way. Every test here is
+		// anonymous, and a suite that trips the default 20-request burst would
+		// report the limiter working as a product bug in whatever test happened
+		// to be tenth. TestTheRateLimiterShedsAnonymousTraffic lowers it back.
+		"TASKAPI_RATELIMIT_TIERS_ANONYMOUS_RATE=10000",
+		"TASKAPI_RATELIMIT_TIERS_ANONYMOUS_BURST=10000",
 	}
 }
 

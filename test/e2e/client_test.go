@@ -114,6 +114,32 @@ func (c *client) keyed(key, method, path, body string) (*http.Response, string) 
 	return resp, string(raw)
 }
 
+// bearer issues a request with an Authorization header, or without one when
+// the token is empty.
+func (c *client) bearer(token, method, path string) (*http.Response, string) {
+	c.t.Helper()
+
+	req, err := http.NewRequestWithContext(c.t.Context(), method, c.base+path, nil)
+	if err != nil {
+		c.t.Fatalf("%s %s: build request: %v", method, path, err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // body is fully read below
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.t.Fatalf("%s %s: read body: %v", method, path, err)
+	}
+	return resp, string(raw)
+}
+
 // unmarshal decodes a response body captured as a string.
 func unmarshal(body string, out any) error { return json.Unmarshal([]byte(body), out) }
 

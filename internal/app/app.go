@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/arasHi87/gogolook-task-api/internal/admin"
+	"github.com/arasHi87/gogolook-task-api/internal/auth"
 	"github.com/arasHi87/gogolook-task-api/internal/buildinfo"
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/idempotency"
@@ -33,6 +34,8 @@ import (
 	"github.com/arasHi87/gogolook-task-api/internal/postgres"
 	"github.com/arasHi87/gogolook-task-api/internal/queue"
 	"github.com/arasHi87/gogolook-task-api/internal/queue/handler"
+	"github.com/arasHi87/gogolook-task-api/internal/ratelimit"
+	"github.com/arasHi87/gogolook-task-api/internal/resilience"
 	"github.com/arasHi87/gogolook-task-api/internal/runtime"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 	"github.com/arasHi87/gogolook-task-api/internal/task/memrepo"
@@ -92,6 +95,10 @@ type App struct {
 	keys      idempotency.Store
 	keysPurge *idempotency.Purger
 
+	// The inbound guards. auth resolves the caller, limiter meters them.
+	auth    *auth.Resolver
+	limiter *ratelimit.Limiter
+
 	// The queue runs only on the postgres backend: it is the outbox, and an
 	// in-memory store has no transaction to write one in.
 	jobs        *queue.Pool
@@ -136,6 +143,7 @@ func New(o Options) (*App, error) {
 	}
 	a.tasks = task.NewService(repo)
 	a.newIdempotency(o.Config, o.Logger.Logger)
+	a.newGuards(o.Config, o.Logger.Logger)
 
 	if o.Mode.Runs() {
 		if a.apiServer, err = a.newAPIServer(o.Config); err != nil {
@@ -176,6 +184,20 @@ func (a *App) newIdempotency(cfg *config.Config, log *slog.Logger) {
 	a.keysPurge = idempotency.NewPurger(a.keys, cfg.Idempotency, log)
 }
 
+// newGuards wires the inbound protection: who the caller is, and how much of
+// the service they may have.
+//
+// The resolver is built in every mode, including auth.mode=off, because the
+// limiter keys on the identity it produces. Skipping it there would leave every
+// anonymous caller sharing one bucket, which is worse than no limiter at all.
+func (a *App) newGuards(cfg *config.Config, log *slog.Logger) {
+	a.auth = auth.NewResolver(cfg.Auth, cfg.HTTP.TrustedProxyHops)
+
+	if cfg.RateLimit.Enabled {
+		a.limiter = ratelimit.New(cfg.RateLimit, log)
+	}
+}
+
 // readinessChecks are the dependencies this process needs to serve.
 //
 // There are none on the memory backend, which is correct rather than lazy: it
@@ -200,7 +222,20 @@ func (a *App) newQueue(cfg *config.Config, log *slog.Logger) error {
 	a.listener = queue.NewListener(cfg.Storage.Postgres.DSN, log)
 	a.maintenance = queue.NewMaintenance(a.pool, store, cfg.Queue, log)
 
-	webhook := handler.NewWebhook(cfg.Webhook.URL, cfg.Webhook.Timeout.D(), nil)
+	// The webhook is the only genuinely remote thing this service talks to,
+	// which makes it the only honest place for a circuit breaker.
+	webhook := handler.NewWebhook(handler.Options{
+		URL:     cfg.Webhook.URL,
+		Timeout: cfg.Webhook.Timeout.D(),
+		Guard: resilience.New(resilience.Options{
+			Name:      "webhook",
+			Breaker:   cfg.Breaker.Webhook,
+			Timeout:   cfg.Webhook.Timeout.D(),
+			Retry:     cfg.Webhook.Retry,
+			Logger:    log,
+			IsFailure: handler.IsDependencyFailure,
+		}),
+	})
 
 	jobs, err := queue.NewPool(queue.PoolOptions{
 		Store: store,
@@ -265,11 +300,22 @@ func (a *App) newAPIServer(cfg *config.Config) (*http.Server, error) {
 		MaxBodyBytes:      cfg.HTTP.MaxBodyBytes,
 		Idempotency:       a.keys,
 		IdempotencyConfig: cfg.Idempotency,
+		Auth:              a.auth,
+		RateLimit:         a.limiter,
+		GlobalInflight:    inflightLimit(cfg),
 	})
 	if err != nil {
 		return nil, err
 	}
 	return newHTTPServer(cfg.HTTP, handler, a.log.Logger, "api"), nil
+}
+
+// inflightLimit is the load-shedding cap, or zero when the limiter is off.
+func inflightLimit(cfg *config.Config) int {
+	if !cfg.RateLimit.Enabled {
+		return 0
+	}
+	return cfg.RateLimit.GlobalInflight
 }
 
 // newRepository selects the storage backend.
@@ -338,7 +384,8 @@ func (a *App) workers() []Worker {
 	//                   in that window are still served.
 	//   api             stop accepting, finish what was accepted.
 	//   idempotency-purge
-	//                   a housekeeping loop; nothing waits on it.
+	//   ratelimit-sweeper
+	//                   housekeeping loops; nothing waits on them.
 	//   config-reloader a reload racing a shutdown helps nobody.
 	//   admin           last, so health and metrics answer for the whole
 	//                   drain rather than going dark at the start of it.
@@ -371,6 +418,12 @@ func (a *App) workers() []Worker {
 	// keys keep being purged even when only workers are up.
 	if a.keysPurge != nil {
 		ws = append(ws, Worker{Name: "idempotency-purge", Run: a.keysPurge.Run})
+	}
+
+	// The limiter's sweeper evicts idle buckets. It runs wherever the limiter
+	// does, which is wherever there is a public listener.
+	if a.limiter != nil && a.apiServer != nil {
+		ws = append(ws, Worker{Name: "ratelimit-sweeper", Run: a.limiter.Run})
 	}
 
 	ws = append(ws, Worker{Name: "config-reloader", Run: a.runReloader})

@@ -198,6 +198,16 @@ tasks:
     cmds:
       - ./test/demo/idempotency.sh
 
+  demo:ratelimit:
+    desc: Show the two limiter tiers, and what a refused caller is told
+    cmds:
+      - ./test/demo/ratelimit.sh
+
+  demo:breaker:
+    desc: Break the webhook receiver and watch the circuit open, then heal it
+    cmds:
+      - ./test/demo/breaker.sh
+
   sink:
     desc: Report what the webhook sink has received
     cmds:

@@ -20,9 +20,11 @@ import (
 	"github.com/arasHi87/gogolook-task-api/docs"
 	"github.com/arasHi87/gogolook-task-api/gen/task/v1/taskv1connect"
 	"github.com/arasHi87/gogolook-task-api/internal/api"
+	"github.com/arasHi87/gogolook-task-api/internal/auth"
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/httpx"
 	"github.com/arasHi87/gogolook-task-api/internal/idempotency"
+	"github.com/arasHi87/gogolook-task-api/internal/ratelimit"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 )
 
@@ -37,6 +39,15 @@ type Options struct {
 	Idempotency idempotency.Store
 	// IdempotencyConfig tunes the layer. Ignored when Idempotency is nil.
 	IdempotencyConfig config.Idempotency
+
+	// Auth resolves the caller to a client id and a tier. It always runs: the
+	// rate limiter keys on the identity, and an absent identity means every
+	// anonymous caller shares one bucket.
+	Auth *auth.Resolver
+	// RateLimit is the per-caller token bucket. Nil disables both tiers.
+	RateLimit *ratelimit.Limiter
+	// GlobalInflight caps concurrent requests. Zero disables the semaphore.
+	GlobalInflight int
 
 	// handler replaces the transcoder. Unexported because it exists only so a
 	// test can drive the real middleware chain around a handler that misbehaves
@@ -116,6 +127,14 @@ func (o Options) transcoder() (http.Handler, error) {
 //	            handler produces a response instead of a dropped connection.
 //	Deprecation before the handler, because headers must be set before anything
 //	            writes.
+//	Inflight    as early as work can be refused. Before Auth on purpose: the
+//	            point of load shedding is to be the cheapest possible
+//	            rejection, and hashing a token first is work done for a
+//	            request that is about to be thrown away. Which tenant is
+//	            flooding is the per-client limiter's question, not this one's.
+//	Auth        before the limiter, which needs the tier and the bucket key,
+//	            and before the handler, so every log line carries the client.
+//	RateLimit   after Auth, because the quota is per tier.
 //	MaxBody     before Idempotency, so the body that gets buffered and hashed
 //	            is already size-capped.
 //	Idempotency innermost, so what it stores is the response the handler
@@ -127,9 +146,18 @@ func wrap(h http.Handler, o Options) http.Handler {
 		httpx.RequestID(),
 		httpx.Logger(),
 		httpx.Recover(),
-		httpx.Deprecation(),
-		httpx.MaxBody(o.MaxBodyBytes),
 	}
+	if o.GlobalInflight > 0 {
+		mw = append(mw, ratelimit.Inflight(o.GlobalInflight))
+	}
+	if o.Auth != nil {
+		mw = append(mw, auth.Middleware(o.Auth))
+	}
+	if o.RateLimit != nil {
+		mw = append(mw, ratelimit.Middleware(o.RateLimit))
+	}
+
+	mw = append(mw, httpx.Deprecation(), httpx.MaxBody(o.MaxBodyBytes))
 	if o.Idempotency != nil {
 		mw = append(mw, idempotency.Middleware(o.Idempotency, o.IdempotencyConfig))
 	}

@@ -7,6 +7,7 @@ require (
 	connectrpc.com/connect v1.20.0
 	connectrpc.com/validate v0.6.0
 	connectrpc.com/vanguard v0.4.0
+	github.com/failsafe-go/failsafe-go v0.9.7
 	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/gnostic v0.7.1
@@ -26,6 +27,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	go.uber.org/goleak v1.3.0
+	golang.org/x/time v0.15.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
@@ -39,6 +41,7 @@ require (
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
+	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect

@@ -3,6 +3,7 @@ package handler_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -12,8 +13,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/arasHi87/gogolook-task-api/internal/apperr"
+	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/queue"
 	"github.com/arasHi87/gogolook-task-api/internal/queue/handler"
+	"github.com/arasHi87/gogolook-task-api/internal/resilience"
 	"github.com/arasHi87/gogolook-task-api/internal/task/pgrepo"
 )
 
@@ -47,7 +50,7 @@ func TestDeliverySendsDeduplicationHeaders(t *testing.T) {
 	defer srv.Close()
 
 	event := testEvent()
-	h := handler.NewWebhook(srv.URL, time.Second, srv.Client())
+	h := handler.NewWebhook(handler.Options{URL: srv.URL, Timeout: time.Second, Client: srv.Client()})
 	if err := h.Handle(t.Context(), newJob(t, event)); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -122,7 +125,7 @@ func TestStatusDecidesRetryability(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			h := handler.NewWebhook(srv.URL, time.Second, srv.Client())
+			h := handler.NewWebhook(handler.Options{URL: srv.URL, Timeout: time.Second, Client: srv.Client()})
 			err := h.Handle(t.Context(), newJob(t, testEvent()))
 
 			if !want.wantErr {
@@ -150,7 +153,7 @@ func TestStatusDecidesRetryability(t *testing.T) {
 func TestTransportFailureIsUnavailable(t *testing.T) {
 	t.Parallel()
 
-	h := handler.NewWebhook("http://127.0.0.1:1/hook", 500*time.Millisecond, nil)
+	h := handler.NewWebhook(handler.Options{URL: "http://127.0.0.1:1/hook", Timeout: 500 * time.Millisecond})
 	err := h.Handle(t.Context(), newJob(t, testEvent()))
 	if err == nil {
 		t.Fatal("Handle = nil, want an error")
@@ -167,7 +170,7 @@ func TestTransportFailureIsUnavailable(t *testing.T) {
 func TestUnparseablePayloadIsTerminal(t *testing.T) {
 	t.Parallel()
 
-	h := handler.NewWebhook("http://example.invalid/hook", time.Second, nil)
+	h := handler.NewWebhook(handler.Options{URL: "http://example.invalid/hook", Timeout: time.Second})
 	err := h.Handle(t.Context(), &queue.Job{
 		ID: 1, Kind: pgrepo.JobKind, Payload: []byte("not json"), Attempt: 1, MaxAttempts: 5,
 	})
@@ -185,7 +188,7 @@ func TestUnparseablePayloadIsTerminal(t *testing.T) {
 func TestNoURLIsANoOp(t *testing.T) {
 	t.Parallel()
 
-	h := handler.NewWebhook("", time.Second, nil)
+	h := handler.NewWebhook(handler.Options{Timeout: time.Second})
 	if err := h.Handle(t.Context(), newJob(t, testEvent())); err != nil {
 		t.Errorf("Handle = %v, want nil", err)
 	}
@@ -214,7 +217,7 @@ func TestDeliveryRespectsTheContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 
-	h := handler.NewWebhook(srv.URL, time.Minute, srv.Client())
+	h := handler.NewWebhook(handler.Options{URL: srv.URL, Timeout: time.Minute, Client: srv.Client()})
 	started := time.Now()
 	err := h.Handle(ctx, newJob(t, testEvent()))
 
@@ -227,6 +230,128 @@ func TestDeliveryRespectsTheContext(t *testing.T) {
 	if hits.Load() != 1 {
 		t.Errorf("the sink saw %d requests, want 1", hits.Load())
 	}
+}
+
+// The breaker turns a slow failure into a fast one; the snooze stops that fast
+// failure being counted as the job's fault.
+//
+// Without the pairing, a thirty-second dependency outage burns a valid job's
+// entire retry budget in a few milliseconds of instant refusals and discards
+// it — the job is punished for someone else's outage.
+func TestAnOpenCircuitSnoozesRatherThanFails(t *testing.T) {
+	t.Parallel()
+
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	h := handler.NewWebhook(handler.Options{
+		URL:     srv.URL,
+		Timeout: time.Second,
+		Client:  srv.Client(),
+		Guard:   testGuard(),
+	})
+
+	// Drive the circuit open. Four attempts is the configured floor.
+	for range 4 {
+		_ = h.Handle(t.Context(), newJob(t, testEvent()))
+	}
+
+	before := hits.Load()
+	err := h.Handle(t.Context(), newJob(t, testEvent()))
+
+	var snooze *queue.SnoozeError
+	if !errors.As(err, &snooze) {
+		t.Fatalf("Handle = %v, want a snooze once the circuit is open", err)
+	}
+	if snooze.For <= 0 {
+		t.Errorf("snooze duration = %s; the job would be retried before the circuit can probe", snooze.For)
+	}
+	if hits.Load() != before {
+		t.Error("the sink was called through an open circuit")
+	}
+
+	// A snooze is not a failure: the job keeps its budget and comes back.
+	if queue.IsTerminal(err) {
+		t.Error("the snooze was terminal; the job would be discarded for a dependency outage")
+	}
+}
+
+// The breaker must not count a rejected payload. Counting it means one
+// validation bug takes down a healthy dependency.
+func TestARejectedPayloadDoesNotOpenTheCircuit(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	h := handler.NewWebhook(handler.Options{
+		URL:     srv.URL,
+		Timeout: time.Second,
+		Client:  srv.Client(),
+		Guard:   testGuard(),
+	})
+
+	for range 20 {
+		err := h.Handle(t.Context(), newJob(t, testEvent()))
+		if !queue.IsTerminal(err) {
+			t.Fatalf("Handle = %v, want a terminal error for a 400", err)
+		}
+		var snooze *queue.SnoozeError
+		if errors.As(err, &snooze) {
+			t.Fatal("the circuit opened on our own rejected payloads")
+		}
+	}
+}
+
+func TestIsDependencyFailure(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		err  error
+		want bool
+	}{
+		"nil":                  {nil, false},
+		"their outage":         {apperr.New(apperr.Unavailable, "503"), true},
+		"their rate limit":     {apperr.New(apperr.Exhausted, "429"), true},
+		"our rejected payload": {queue.Terminal(apperr.New(apperr.Invalid, "400")), false},
+		"our unparseable job":  {queue.Terminal(errors.New("bad json")), false},
+	}
+
+	for name, tc := range cases {
+		if got := handler.IsDependencyFailure(tc.err); got != tc.want {
+			t.Errorf("%s: IsDependencyFailure = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// testGuard is the resilience chain with a low floor, so a test can trip it
+// without making twenty calls.
+func testGuard() *resilience.Executor {
+	cfg := config.Defaults()
+
+	b := cfg.Breaker.Webhook
+	b.MinThroughput = 4
+	b.Window = config.Duration(time.Minute)
+	b.OpenDuration = config.Duration(30 * time.Second)
+
+	r := cfg.Webhook.Retry
+	r.MaxAttempts = 1
+	r.Base = config.Duration(time.Millisecond)
+	r.Max = config.Duration(2 * time.Millisecond)
+
+	return resilience.New(resilience.Options{
+		Name:      "test-webhook",
+		Breaker:   b,
+		Timeout:   time.Second,
+		Retry:     r,
+		IsFailure: handler.IsDependencyFailure,
+	})
 }
 
 func isTerminal(err error) bool { return queue.IsTerminal(err) }

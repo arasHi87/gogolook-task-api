@@ -69,6 +69,10 @@ Three decisions do most of the work:
 | `TestKeyReuseIsRejectedEndToEnd` | the same key with a different request ⇒ 422, and nothing executed |
 | `TestAKeyWorksAcrossBothSurfaces` | a key used on `/api/v1/tasks` and retried on `/tasks` is a retry, not reuse |
 | `TestAFailedWriteDoesNotConsumeItsKey` | a rejected write leaves no key, so the client's retry can succeed |
+| `TestTheRateLimiterShedsAnonymousTraffic` | the quota is enforced, and a refused caller is told the policy and when to return |
+| `TestATokenBuysTheStandardQuota` | the quota follows the token, and the two tiers do not share a bucket |
+| `TestTheDefaultModeNeverRejects` | no token, a stale token and a valid one all get served |
+| `TestTheBreakerOpensAndTheJobsSurviveIt` | a dead dependency opens the circuit, the jobs snooze with their budget intact, and every change is delivered when it returns |
 
 ## What it deliberately does not cover
 
@@ -100,3 +104,10 @@ any retry.
 **A response writer connect-go refused to use.** The capturing writer did not
 implement `http.Flusher`, which connect type-asserts. Every write returned 500
 the moment the real transcoder was behind it.
+
+**A circuit breaker that never reported recovering.** Every state change logged
+the same message at WARN, and the log throttler collapses repeated WARN records
+by `(level, message)` — which is right for a breaker that flaps, and silently
+ate the `closed` transition. Each destination state now has its own message, so
+flapping is still collapsed per state while open and closed are never confused
+for each other.

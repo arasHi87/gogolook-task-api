@@ -21,6 +21,10 @@ type WebhookRetry struct {
 	MaxAttempts int      `koanf:"max_attempts" yaml:"max_attempts" json:"max_attempts"`
 	Base        Duration `koanf:"base"         yaml:"base"         json:"base"`
 	Max         Duration `koanf:"max"          yaml:"max"          json:"max"`
+	// BudgetMaxRate caps retries as a fraction of the calls already in flight.
+	// Without a budget, a total outage costs the dependency max_attempts times
+	// its normal traffic at exactly the moment it can least take it.
+	BudgetMaxRate float64 `koanf:"budget_max_rate" yaml:"budget_max_rate" json:"budget_max_rate"`
 }
 
 // Path implements Section.
@@ -36,6 +40,9 @@ func (w *Webhook) SetDefaults() {
 			MaxAttempts: 3,
 			Base:        Duration(200 * time.Millisecond),
 			Max:         Duration(5 * time.Second),
+			// One retry for every five calls in flight. An outage then costs
+			// the dependency 1.2x its traffic rather than 3x.
+			BudgetMaxRate: 0.2,
 		},
 	}
 }
@@ -59,6 +66,9 @@ func (r *WebhookRetry) validate(p *Problems, prefix string) {
 	p.Positive(at("max"), r.Max)
 	if r.Base > r.Max {
 		p.Add(at("base"), "must not exceed %s", at("max"))
+	}
+	if r.BudgetMaxRate <= 0 || r.BudgetMaxRate > 1 {
+		p.Add(at("budget_max_rate"), "must be in (0, 1]")
 	}
 }
 

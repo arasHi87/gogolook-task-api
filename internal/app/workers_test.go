@@ -56,8 +56,11 @@ func TestWorkerTableIsInDrainOrder(t *testing.T) {
 		// idempotency-purge is present in every mode: it is leader-elected, so
 		// running it everywhere costs nothing and means keys keep being purged
 		// even when only workers are up.
-		ModeServe:  {"readiness", "api", "idempotency-purge", "config-reloader", "admin"},
-		ModeAll:    {"readiness", "api", "idempotency-purge", "config-reloader", "admin"},
+		//
+		// ratelimit-sweeper runs only where there is a public listener: a
+		// worker has no callers to meter.
+		ModeServe:  {"readiness", "api", "idempotency-purge", "ratelimit-sweeper", "config-reloader", "admin"},
+		ModeAll:    {"readiness", "api", "idempotency-purge", "ratelimit-sweeper", "config-reloader", "admin"},
 		ModeWorker: {"readiness", "idempotency-purge", "config-reloader", "admin"},
 	}
 
