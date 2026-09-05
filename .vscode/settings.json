@@ -1,0 +1,34 @@
+{
+  // Proto imports resolve through buf's module cache, which the editor cannot
+  // see — so buf.validate, gnostic and google.api all show as unresolved
+  // imports even though `buf lint` and `buf build` are clean.
+  //
+  // `task proto:deps` exports those dependencies into .proto-deps (gitignored),
+  // and these two include paths are what the language server searches.
+  "protobuf.includes": [
+    "proto",
+    ".proto-deps"
+  ],
+
+  // buf is the authority on this repo's proto, so let it be the linter rather
+  // than the extension's own guesses about style.
+  "protobuf.externalLinter.enabled": true,
+  "protobuf.externalLinter.linter": "buf",
+  "protobuf.externalLinter.bufConfigPath": "buf.yaml",
+  "protobuf.codegen.tool": "buf",
+
+  "[proto]": {
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true
+  },
+
+  "gopls": {
+    "ui.completion.usePlaceholders": true
+  },
+  "go.lintTool": "golangci-lint",
+  "go.testFlags": ["-race", "-short"],
+
+  "files.exclude": {
+    "**/.proto-deps": true
+  }
+}

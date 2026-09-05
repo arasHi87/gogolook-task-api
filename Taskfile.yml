@@ -115,6 +115,20 @@ tasks:
       - buf lint
       - buf breaking --against '.git#branch=main' || true
 
+  proto:deps:
+    desc: Export the proto dependencies so an editor can resolve the imports
+    # buf resolves these from its own module cache; editors cannot see it, which
+    # is why every import shows as unresolved without this. The export is
+    # gitignored and .vscode/settings.json points at it.
+    cmds:
+      - rm -rf .proto-deps
+      - buf export . --output .proto-deps
+      # Drop our own module from the export: it would shadow the real source
+      # with a stale copy the editor might resolve against.
+      - |
+        for dir in proto/*/; do rm -rf ".proto-deps/$(basename "$dir")"; done
+      - echo "exported to .proto-deps"
+
   docker:build:
     desc: Build the container image
     cmds:

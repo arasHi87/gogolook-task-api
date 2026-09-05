@@ -1,0 +1,9 @@
+{
+  // What this repo actually needs to be editable. Nothing here is required to
+  // build it — `task build` and `task generate` work with no editor at all.
+  "recommendations": [
+    "golang.go",
+    "drblury.protobuf-vsc",
+    "task.vscode-task"
+  ]
+}

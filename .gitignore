@@ -18,7 +18,18 @@ coverage.out
 coverage.html
 *.test
 
-# OS / editor
+# Task's fingerprint cache
+/.task/
+
+# Proto dependencies exported for the editor's import resolution (task proto:deps).
+# buf resolves these from its own module cache and does not need them.
+/.proto-deps/
+
+# OS / editor. The editor directory is ignored except for the two files that
+# are project configuration rather than personal preference: where to find the
+# proto imports, and which extensions make that work.
 .DS_Store
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
