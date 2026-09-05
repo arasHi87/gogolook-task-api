@@ -1,0 +1,33 @@
+version: v2
+
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/arasHi87/gogolook-task-api/gen
+  disable:
+    - file_option: go_package_prefix
+      module: buf.build/googleapis/googleapis
+    - file_option: go_package_prefix
+      module: buf.build/bufbuild/protovalidate
+    - file_option: go_package_prefix
+      module: buf.build/gnostic/gnostic
+
+plugins:
+  # The message structs.
+  - remote: buf.build/protocolbuffers/go
+    out: gen
+    opt: paths=source_relative
+
+  # The Connect handler and client. One handler serves Connect, gRPC and
+  # gRPC-Web; vanguard adds the REST routes on the same mux.
+  - remote: buf.build/connectrpc/go
+    out: gen
+    opt: paths=source_relative
+
+  # OpenAPI 3.1, generated from the same google.api.http annotations vanguard
+  # routes on and the same buf.validate constraints protovalidate enforces.
+  - remote: buf.build/community/sudorandom-connect-openapi
+    out: docs
+    opt:
+      - path=openapi.yaml

@@ -1,0 +1,16 @@
+# buf workspace. The proto directory is the single source of truth for the API:
+# the Go types, the Connect handlers, the REST routes and the OpenAPI document
+# are all generated from it, so they are structurally incapable of drifting.
+version: v2
+modules:
+  - path: proto
+deps:
+  - buf.build/googleapis/googleapis
+  - buf.build/bufbuild/protovalidate
+  - buf.build/gnostic/gnostic
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

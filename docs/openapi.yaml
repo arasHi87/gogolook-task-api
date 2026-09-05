@@ -1,0 +1,536 @@
+openapi: 3.1.0
+info:
+  title: Task API
+  description: |-
+    A task list, and the machinery around it.
+
+    The canonical paths are /api/v1/*. The unversioned /tasks paths are bound to the same handlers and are deprecated: responses on them carry Deprecation and Sunset headers.
+
+    Authentication is optional by default. A request with no bearer token is served at the anonymous rate-limit tier rather than rejected.
+
+    Note: OpenAPI cannot mark one google.api.http additional_binding deprecated without marking its primary binding too, so the /tasks operations below are not flagged in this document. The runtime is where that distinction lives: responses on the unversioned paths carry Deprecation, Sunset and Link: rel="successor-version" headers.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local development
+paths:
+  /api/v1/tasks:
+    get:
+      tags:
+        - task.v1.TaskService
+      summary: ListTasks
+      description: List tasks, newest first.
+      operationId: task.v1.TaskService.ListTasks
+      parameters:
+        - name: status
+          in: query
+          description: Return only tasks with this status. Absent means all.
+          schema:
+            type: integer
+            title: status
+            format: int32
+            enum:
+              - 0
+              - 1
+        - name: pageSize
+          in: query
+          description: Maximum tasks to return. 0 means the server default of 20; the cap is 100.
+          schema:
+            type: integer
+            title: page_size
+            maximum: 100
+            minimum: 0
+            format: int32
+        - name: pageToken
+          in: query
+          description: |-
+            Opaque cursor from a previous response's next_page_token.
+
+             Keyset pagination, not offset: an offset scan degrades linearly with depth
+             and can skip or repeat rows when the table changes underneath it.
+          schema:
+            type: string
+            title: page_token
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/task.v1.ListTasksResponse'
+    post:
+      tags:
+        - task.v1.TaskService
+      summary: CreateTask
+      description: Create a task.
+      operationId: task.v1.TaskService.CreateTask
+      requestBody:
+        content:
+          application/json:
+            schema:
+              title: task
+              $ref: '#/components/schemas/task.v1.Task'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                title: task
+                $ref: '#/components/schemas/task.v1.Task'
+  /api/v1/tasks/{id}:
+    put:
+      tags:
+        - task.v1.TaskService
+      summary: UpdateTask
+      description: |-
+        Replace a task. PUT is a full replacement: name and status are both
+         required. Partial update would be PATCH with a field mask, which is out of
+         scope for this contract.
+      operationId: task.v1.TaskService.UpdateTask
+      parameters:
+        - name: id
+          in: path
+          description: The task to replace.
+          required: true
+          schema:
+            type: string
+            title: id
+            format: uuid
+      requestBody:
+        description: The replacement. Its id field is ignored; the path wins.
+        content:
+          application/json:
+            schema:
+              title: task
+              description: The replacement. Its id field is ignored; the path wins.
+              $ref: '#/components/schemas/task.v1.Task'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                title: task
+                $ref: '#/components/schemas/task.v1.Task'
+    delete:
+      tags:
+        - task.v1.TaskService
+      summary: DeleteTask
+      description: Delete a task. Deleting an unknown id is a 404, not a silent success.
+      operationId: task.v1.TaskService.DeleteTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: id
+            format: uuid
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/task.v1.DeleteTaskResponse'
+  /tasks:
+    get:
+      tags:
+        - task.v1.TaskService
+      summary: ListTasks
+      description: List tasks, newest first.
+      operationId: task.v1.TaskService.ListTasks2
+      parameters:
+        - name: status
+          in: query
+          description: Return only tasks with this status. Absent means all.
+          schema:
+            type: integer
+            title: status
+            format: int32
+            enum:
+              - 0
+              - 1
+        - name: pageSize
+          in: query
+          description: Maximum tasks to return. 0 means the server default of 20; the cap is 100.
+          schema:
+            type: integer
+            title: page_size
+            maximum: 100
+            minimum: 0
+            format: int32
+        - name: pageToken
+          in: query
+          description: |-
+            Opaque cursor from a previous response's next_page_token.
+
+             Keyset pagination, not offset: an offset scan degrades linearly with depth
+             and can skip or repeat rows when the table changes underneath it.
+          schema:
+            type: string
+            title: page_token
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/task.v1.ListTasksResponse'
+    post:
+      tags:
+        - task.v1.TaskService
+      summary: CreateTask
+      description: Create a task.
+      operationId: task.v1.TaskService.CreateTask2
+      requestBody:
+        content:
+          application/json:
+            schema:
+              title: task
+              $ref: '#/components/schemas/task.v1.Task'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                title: task
+                $ref: '#/components/schemas/task.v1.Task'
+  /tasks/{id}:
+    put:
+      tags:
+        - task.v1.TaskService
+      summary: UpdateTask
+      description: |-
+        Replace a task. PUT is a full replacement: name and status are both
+         required. Partial update would be PATCH with a field mask, which is out of
+         scope for this contract.
+      operationId: task.v1.TaskService.UpdateTask2
+      parameters:
+        - name: id
+          in: path
+          description: The task to replace.
+          required: true
+          schema:
+            type: string
+            title: id
+            format: uuid
+      requestBody:
+        description: The replacement. Its id field is ignored; the path wins.
+        content:
+          application/json:
+            schema:
+              title: task
+              description: The replacement. Its id field is ignored; the path wins.
+              $ref: '#/components/schemas/task.v1.Task'
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                title: task
+                $ref: '#/components/schemas/task.v1.Task'
+    delete:
+      tags:
+        - task.v1.TaskService
+      summary: DeleteTask
+      description: Delete a task. Deleting an unknown id is a 404, not a silent success.
+      operationId: task.v1.TaskService.DeleteTask2
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            title: id
+            format: uuid
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/task.v1.DeleteTaskResponse'
+components:
+  schemas:
+    google.protobuf.Timestamp:
+      type: string
+      examples:
+        - "2023-01-15T01:30:15.01Z"
+        - "2024-12-25T12:00:00Z"
+      format: date-time
+      description: |-
+        A Timestamp represents a point in time independent of any time zone or local
+         calendar, encoded as a count of seconds and fractions of seconds at
+         nanosecond resolution. The count is relative to an epoch at UTC midnight on
+         January 1, 1970, in the proleptic Gregorian calendar which extends the
+         Gregorian calendar backwards to year one.
+
+         All minutes are 60 seconds long. Leap seconds are "smeared" so that no leap
+         second table is needed for interpretation, using a [24-hour linear
+         smear](https://developers.google.com/time/smear).
+
+         The range is from 0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999999999Z. By
+         restricting to that range, we ensure that we can convert to and from [RFC
+         3339](https://www.ietf.org/rfc/rfc3339.txt) date strings.
+
+         # Examples
+
+         Example 1: Compute Timestamp from POSIX `time()`.
+
+             Timestamp timestamp;
+             timestamp.set_seconds(time(NULL));
+             timestamp.set_nanos(0);
+
+         Example 2: Compute Timestamp from POSIX `gettimeofday()`.
+
+             struct timeval tv;
+             gettimeofday(&tv, NULL);
+
+             Timestamp timestamp;
+             timestamp.set_seconds(tv.tv_sec);
+             timestamp.set_nanos(tv.tv_usec * 1000);
+
+         Example 3: Compute Timestamp from Win32 `GetSystemTimeAsFileTime()`.
+
+             FILETIME ft;
+             GetSystemTimeAsFileTime(&ft);
+             UINT64 ticks = (((UINT64)ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+
+             // A Windows tick is 100 nanoseconds. Windows epoch 1601-01-01T00:00:00Z
+             // is 11644473600 seconds before Unix epoch 1970-01-01T00:00:00Z.
+             Timestamp timestamp;
+             timestamp.set_seconds((INT64) ((ticks / 10000000) - 11644473600LL));
+             timestamp.set_nanos((INT32) ((ticks % 10000000) * 100));
+
+         Example 4: Compute Timestamp from Java `System.currentTimeMillis()`.
+
+             long millis = System.currentTimeMillis();
+
+             Timestamp timestamp = Timestamp.newBuilder().setSeconds(millis / 1000)
+                 .setNanos((int) ((millis % 1000) * 1000000)).build();
+
+         Example 5: Compute Timestamp from Java `Instant.now()`.
+
+             Instant now = Instant.now();
+
+             Timestamp timestamp =
+                 Timestamp.newBuilder().setSeconds(now.getEpochSecond())
+                     .setNanos(now.getNano()).build();
+
+         Example 6: Compute Timestamp from current time in Python.
+
+             timestamp = Timestamp()
+             timestamp.GetCurrentTime()
+
+         # JSON Mapping
+
+         In JSON format, the Timestamp type is encoded as a string in the
+         [RFC 3339](https://www.ietf.org/rfc/rfc3339.txt) format. That is, the
+         format is "{year}-{month}-{day}T{hour}:{min}:{sec}[.{frac_sec}]Z"
+         where {year} is always expressed using four digits while {month}, {day},
+         {hour}, {min}, and {sec} are zero-padded to two digits each. The fractional
+         seconds, which can go up to 9 digits (i.e. up to 1 nanosecond resolution),
+         are optional. The "Z" suffix indicates the timezone ("UTC"); the timezone
+         is required. A proto3 JSON serializer should always use UTC (as indicated by
+         "Z") when printing the Timestamp type and a proto3 JSON parser should be
+         able to accept both UTC and other timezones (as indicated by an offset).
+
+         For example, "2017-01-15T01:30:15.01Z" encodes 15.01 seconds past
+         01:30 UTC on January 15, 2017.
+
+         In JavaScript, one can convert a Date object to this format using the
+         standard
+         [toISOString()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/toISOString)
+         method. In Python, a standard `datetime.datetime` object can be converted
+         to this format using
+         [`strftime`](https://docs.python.org/2/library/time.html#time.strftime) with
+         the time format spec '%Y-%m-%dT%H:%M:%S.%fZ'. Likewise, in Java, one can use
+         the Joda Time's [`ISODateTimeFormat.dateTime()`](
+         http://joda-time.sourceforge.net/apidocs/org/joda/time/format/ISODateTimeFormat.html#dateTime()
+         ) to obtain a formatter capable of generating timestamps in this format.
+    task.v1.CreateTaskRequest:
+      type: object
+      properties:
+        task:
+          title: task
+          $ref: '#/components/schemas/task.v1.Task'
+      title: CreateTaskRequest
+      required:
+        - task
+      additionalProperties: false
+      description: |-
+        Request for CreateTask. Only name and status are read; id, timestamps and
+         version are server-assigned.
+    task.v1.CreateTaskResponse:
+      type: object
+      properties:
+        task:
+          title: task
+          $ref: '#/components/schemas/task.v1.Task'
+      title: CreateTaskResponse
+      additionalProperties: false
+      description: Response for CreateTask.
+    task.v1.DeleteTaskRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+          format: uuid
+      title: DeleteTaskRequest
+      additionalProperties: false
+      description: Request for DeleteTask.
+    task.v1.DeleteTaskResponse:
+      type: object
+      title: DeleteTaskResponse
+      additionalProperties: false
+      description: 'Response for DeleteTask. Empty: the deletion is the result.'
+    task.v1.ListTasksRequest:
+      type: object
+      properties:
+        status:
+          type:
+            - integer
+            - "null"
+          title: status
+          format: int32
+          enum:
+            - 0
+            - 1
+          description: Return only tasks with this status. Absent means all.
+        pageSize:
+          type: integer
+          title: page_size
+          maximum: 100
+          minimum: 0
+          format: int32
+          description: Maximum tasks to return. 0 means the server default of 20; the cap is 100.
+        pageToken:
+          type: string
+          title: page_token
+          description: |-
+            Opaque cursor from a previous response's next_page_token.
+
+             Keyset pagination, not offset: an offset scan degrades linearly with depth
+             and can skip or repeat rows when the table changes underneath it.
+      title: ListTasksRequest
+      additionalProperties: false
+      description: Request for ListTasks.
+    task.v1.ListTasksResponse:
+      type: object
+      properties:
+        result:
+          type: array
+          items:
+            $ref: '#/components/schemas/task.v1.Task'
+          title: result
+          description: The page of tasks.
+        nextPageToken:
+          type: string
+          title: next_page_token
+          description: Cursor for the next page. Empty when there are no more.
+      title: ListTasksResponse
+      additionalProperties: false
+      description: Response for ListTasks.
+    task.v1.Task:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+          format: uuid
+          description: Server-assigned identifier. Ignored on create.
+        name:
+          type: string
+          title: name
+          maxLength: 255
+          minLength: 1
+          description: What the task is. Required, 1-255 characters.
+        status:
+          type: integer
+          title: status
+          format: int32
+          enum:
+            - 0
+            - 1
+          description: |-
+            0 = incomplete, 1 = completed.
+
+             Deliberately an int32 rather than a proto enum: an enum would serialise as
+             its name ("STATUS_COMPLETED") in JSON, and the specified contract is an
+             integer. The permitted values are declared once here and are enforced at
+             runtime by protovalidate and documented in the generated OpenAPI.
+        createdAt:
+          title: created_at
+          description: When the task was first stored.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updatedAt:
+          title: updated_at
+          description: When the task last changed.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        version:
+          type:
+            - integer
+            - string
+          title: version
+          format: int64
+          description: |-
+            Optimistic-concurrency token, incremented on every update. Send it back on
+             update to be told (409) rather than silently overwrite a concurrent edit.
+      title: Task
+      additionalProperties: false
+      description: |-
+        A unit of work.
+
+         The exercise specifies name and status; the rest is the housekeeping every
+         real table has. No business fields are invented.
+    task.v1.UpdateTaskRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          title: id
+          format: uuid
+          description: The task to replace.
+        task:
+          title: task
+          description: The replacement. Its id field is ignored; the path wins.
+          $ref: '#/components/schemas/task.v1.Task'
+      title: UpdateTaskRequest
+      required:
+        - task
+      additionalProperties: false
+      description: Request for UpdateTask.
+    task.v1.UpdateTaskResponse:
+      type: object
+      properties:
+        task:
+          title: task
+          $ref: '#/components/schemas/task.v1.Task'
+      title: UpdateTaskResponse
+      additionalProperties: false
+      description: Response for UpdateTask.
+  securitySchemes:
+    bearerAuth:
+      type: http
+      description: 'A static token identifying the caller, which selects its rate-limit tier. Optional: see auth.mode.'
+      scheme: bearer
+security:
+  - {}
+  - bearerAuth: []
+tags:
+  - name: task.v1.TaskService
+    description: |-
+      TaskService is the whole public surface.
+
+       The canonical REST paths are /api/v1/*. The bare paths from the original
+       specification are bound as additional, deprecated aliases so that a client
+       written against the unversioned contract keeps working; see the README for
+       why both exist rather than a redirect.

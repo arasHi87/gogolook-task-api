@@ -46,6 +46,38 @@ jobs:
       - name: build
         run: go build -trimpath ./...
 
+  proto:
+    name: proto & generated code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # buf breaking needs history to compare against main
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: buf lint
+        run: buf lint
+
+      # A breaking change to the wire contract should be a deliberate act, not
+      # something noticed by a client.
+      - name: buf breaking
+        if: github.event_name == 'pull_request'
+        run: buf breaking --against '.git#branch=origin/main'
+
+      # The committed gen/ and docs/openapi.yaml cannot drift from the proto:
+      # regenerate and require no diff.
+      - name: generated output is current
+        run: |
+          buf generate
+          git diff --exit-code -- gen docs/openapi.yaml \
+            || { echo "::error::generated output is stale — run 'make generate' and commit"; exit 1; }
+
   lint:
     name: lint
     runs-on: ubuntu-latest

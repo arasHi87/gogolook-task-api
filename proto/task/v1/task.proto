@@ -1,0 +1,231 @@
+// The Task API.
+//
+// This file is the single source of truth for the service. From it are
+// generated: the Go message types, the Connect/gRPC handler and client, the
+// REST routes (vanguard reads the google.api.http annotations at runtime), and
+// the OpenAPI 3.1 document. Nothing about the contract is written twice, so
+// nothing about it can drift.
+syntax = "proto3";
+
+package task.v1;
+
+import "buf/validate/validate.proto";
+import "gnostic/openapi/v3/annotations.proto";
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+// Document metadata for the generated OpenAPI. Keeping it here rather than in a
+// hand-maintained base document means the spec has exactly one source, and the
+// CI drift check covers all of it.
+option (gnostic.openapi.v3.document) = {
+  info: {
+    title: "Task API"
+    version: "1.0.0"
+    description:
+      "A task list, and the machinery around it.\n\n"
+      "The canonical paths are /api/v1/*. The unversioned /tasks paths are "
+      "bound to the same handlers and are deprecated: responses on them carry "
+      "Deprecation and Sunset headers.\n\n"
+      "Authentication is optional by default. A request with no bearer token "
+      "is served at the anonymous rate-limit tier rather than rejected.\n\n"
+      "Note: OpenAPI cannot mark one google.api.http additional_binding "
+      "deprecated without marking its primary binding too, so the /tasks "
+      "operations below are not flagged in this document. The runtime is where "
+      "that distinction lives: responses on the unversioned paths carry "
+      "Deprecation, Sunset and Link: rel=\"successor-version\" headers."
+    license: {
+      name: "MIT"
+      url: "https://opensource.org/licenses/MIT"
+    }
+  }
+  servers: [
+    {
+      url: "http://localhost:8080"
+      description: "Local development"
+    }
+  ]
+  components: {
+    security_schemes: {
+      additional_properties: [
+        {
+          name: "bearerAuth"
+          value: {
+            security_scheme: {
+              type: "http"
+              scheme: "bearer"
+              description:
+                "A static token identifying the caller, which selects its "
+                "rate-limit tier. Optional: see auth.mode."
+            }
+          }
+        }
+      ]
+    }
+  }
+  // Two requirements, and the empty one is load-bearing: it is how OpenAPI says
+  // "anonymous is allowed", which matches auth.mode: optional.
+  security: [
+    {},
+    {
+      additional_properties: [
+        {
+          name: "bearerAuth"
+          value: {}
+        }
+      ]
+    }
+  ]
+};
+
+// A unit of work.
+//
+// The exercise specifies name and status; the rest is the housekeeping every
+// real table has. No business fields are invented.
+message Task {
+  // Server-assigned identifier. Ignored on create.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+
+  // What the task is. Required, 1-255 characters.
+  string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+
+  // 0 = incomplete, 1 = completed.
+  //
+  // Deliberately an int32 rather than a proto enum: an enum would serialise as
+  // its name ("STATUS_COMPLETED") in JSON, and the specified contract is an
+  // integer. The permitted values are declared once here and are enforced at
+  // runtime by protovalidate and documented in the generated OpenAPI.
+  int32 status = 3 [(buf.validate.field).int32 = {in: [
+    0,
+    1
+  ]}];
+
+  // When the task was first stored.
+  google.protobuf.Timestamp created_at = 4;
+
+  // When the task last changed.
+  google.protobuf.Timestamp updated_at = 5;
+
+  // Optimistic-concurrency token, incremented on every update. Send it back on
+  // update to be told (409) rather than silently overwrite a concurrent edit.
+  int64 version = 6;
+}
+
+// TaskService is the whole public surface.
+//
+// The canonical REST paths are /api/v1/*. The bare paths from the original
+// specification are bound as additional, deprecated aliases so that a client
+// written against the unversioned contract keeps working; see the README for
+// why both exist rather than a redirect.
+service TaskService {
+  // List tasks, newest first.
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/tasks"
+      additional_bindings: {get: "/tasks"}
+    };
+  }
+
+  // Create a task.
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/tasks"
+      body: "task"
+      response_body: "task"
+      additional_bindings: {
+        post: "/tasks"
+        body: "task"
+        response_body: "task"
+      }
+    };
+  }
+
+  // Replace a task. PUT is a full replacement: name and status are both
+  // required. Partial update would be PATCH with a field mask, which is out of
+  // scope for this contract.
+  rpc UpdateTask(UpdateTaskRequest) returns (UpdateTaskResponse) {
+    option (google.api.http) = {
+      put: "/api/v1/tasks/{id}"
+      body: "task"
+      response_body: "task"
+      additional_bindings: {
+        put: "/tasks/{id}"
+        body: "task"
+        response_body: "task"
+      }
+    };
+  }
+
+  // Delete a task. Deleting an unknown id is a 404, not a silent success.
+  rpc DeleteTask(DeleteTaskRequest) returns (DeleteTaskResponse) {
+    option (google.api.http) = {
+      delete: "/api/v1/tasks/{id}"
+      additional_bindings: {delete: "/tasks/{id}"}
+    };
+  }
+}
+
+// Request for ListTasks.
+message ListTasksRequest {
+  // Return only tasks with this status. Absent means all.
+  optional int32 status = 1 [(buf.validate.field).int32 = {in: [
+    0,
+    1
+  ]}];
+
+  // Maximum tasks to return. 0 means the server default of 20; the cap is 100.
+  int32 page_size = 2 [(buf.validate.field).int32 = {
+    gte: 0
+    lte: 100
+  }];
+
+  // Opaque cursor from a previous response's next_page_token.
+  //
+  // Keyset pagination, not offset: an offset scan degrades linearly with depth
+  // and can skip or repeat rows when the table changes underneath it.
+  string page_token = 3;
+}
+
+// Response for ListTasks.
+message ListTasksResponse {
+  // The page of tasks.
+  repeated Task result = 1;
+
+  // Cursor for the next page. Empty when there are no more.
+  string next_page_token = 2;
+}
+
+// Request for CreateTask. Only name and status are read; id, timestamps and
+// version are server-assigned.
+message CreateTaskRequest {
+  Task task = 1 [(buf.validate.field).required = true];
+}
+
+// Response for CreateTask.
+message CreateTaskResponse {
+  Task task = 1;
+}
+
+// Request for UpdateTask.
+message UpdateTaskRequest {
+  // The task to replace.
+  string id = 1 [(buf.validate.field).string.uuid = true];
+
+  // The replacement. Its id field is ignored; the path wins.
+  Task task = 2 [(buf.validate.field).required = true];
+}
+
+// Response for UpdateTask.
+message UpdateTaskResponse {
+  Task task = 1;
+}
+
+// Request for DeleteTask.
+message DeleteTaskRequest {
+  string id = 1 [(buf.validate.field).string.uuid = true];
+}
+
+// Response for DeleteTask. Empty: the deletion is the result.
+message DeleteTaskResponse {}
