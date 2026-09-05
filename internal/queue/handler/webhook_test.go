@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -355,3 +358,119 @@ func testGuard() *resilience.Executor {
 }
 
 func isTerminal(err error) bool { return queue.IsTerminal(err) }
+
+// TestRewindRestoresADrainedBody pins the mechanism behind a bug that only
+// showed up in CI.
+//
+// http.Request.Clone copies the Body field by reference, so a retry handed the
+// transport a reader the previous attempt had already drained: the right
+// Content-Length and no bytes, refused with an error about our own request
+// that looks nothing like the dependency failing.
+//
+// It is tested here rather than through the handler because net/http rescues
+// it *sometimes* — when the transport has to re-send on a fresh connection it
+// calls GetBody itself, so whether a retry works depends on whether the
+// previous connection happened to be reusable. That is precisely why the bug
+// survived a local run, and why an end-to-end test of it would pass by luck.
+func TestRewindRestoresADrainedBody(t *testing.T) {
+	t.Parallel()
+
+	const payload = `{"event":"task.created"}`
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		"http://example.invalid/hook", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+
+	// Drain it, the way the first attempt does.
+	if _, err := io.ReadAll(req.Body); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+
+	// A plain clone shares the drained reader, which is the bug.
+	shared := req.Clone(t.Context())
+	if raw, _ := io.ReadAll(shared.Body); len(raw) != 0 {
+		t.Fatalf("the premise is wrong: a cloned body still had %d bytes", len(raw))
+	}
+
+	rewound, err := handler.Rewind(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Rewind: %v", err)
+	}
+	raw, err := io.ReadAll(rewound.Body)
+	if err != nil {
+		t.Fatalf("read rewound body: %v", err)
+	}
+	if string(raw) != payload {
+		t.Errorf("rewound body = %q, want %q", raw, payload)
+	}
+	if rewound.ContentLength != int64(len(payload)) {
+		t.Errorf("ContentLength = %d, want %d", rewound.ContentLength, len(payload))
+	}
+}
+
+// TestEveryRetryCarriesTheBody is the contract the rewind exists for, stated
+// where a reader of the handler will find it.
+func TestEveryRetryCarriesTheBody(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu     sync.Mutex
+		bodies []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		n := len(bodies)
+		mu.Unlock()
+
+		// Fail the first two so the retry policy is exercised.
+		if n <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	r := cfg.Webhook.Retry
+	r.MaxAttempts = 3
+	r.Base = config.Duration(time.Millisecond)
+	r.Max = config.Duration(2 * time.Millisecond)
+
+	h := handler.NewWebhook(handler.Options{
+		URL:     srv.URL,
+		Timeout: time.Second,
+		Client:  srv.Client(),
+		Guard: resilience.New(resilience.Options{
+			Name:      "test-webhook",
+			Breaker:   cfg.Breaker.Webhook,
+			Timeout:   time.Second,
+			Retry:     r,
+			IsFailure: handler.IsDependencyFailure,
+		}),
+	})
+
+	if err := h.Handle(t.Context(), newJob(t, testEvent())); err != nil {
+		t.Fatalf("Handle = %v, want nil after the third attempt succeeded", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(bodies) != 3 {
+		t.Fatalf("%d attempts reached the sink, want 3", len(bodies))
+	}
+	for i, body := range bodies {
+		if body == "" {
+			t.Errorf("attempt %d arrived with an empty body", i+1)
+		}
+		if body != bodies[0] {
+			t.Errorf("attempt %d body differs from the first:\n got %s\nwant %s", i+1, body, bodies[0])
+		}
+	}
+}

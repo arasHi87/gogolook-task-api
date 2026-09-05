@@ -163,7 +163,11 @@ func (w *Webhook) deliver(ctx context.Context, req *http.Request) error {
 		if attempts > 1 && w.obs != nil {
 			w.obs.Retry(target)
 		}
-		return w.send(req.Clone(ctx))
+		next, err := rewind(ctx, req)
+		if err != nil {
+			return queue.Terminal(err)
+		}
+		return w.send(next)
 	})
 
 	switch {
@@ -178,6 +182,35 @@ func (w *Webhook) deliver(ctx context.Context, req *http.Request) error {
 	default:
 		return err
 	}
+}
+
+// rewind returns a copy of req with a fresh body.
+//
+// Clone alone is not enough, and the way it fails is quiet. Clone copies the
+// Body field by reference, so a second attempt hands the transport a reader the
+// first one already drained: the request goes out with the right
+// Content-Length and no bytes, and the transport rejects it with
+// "ContentLength=168 with Body length 0" — an error about our own request that
+// looks nothing like the dependency failing.
+//
+// It is quiet because net/http rescues it *sometimes*. When the transport has
+// to re-send on a fresh connection it calls GetBody itself, so whether a retry
+// works depends on whether the previous connection happened to be reusable.
+// That is why this survived a local run and failed in CI. GetBody is the
+// rewind hook and http.Client sets it for a bytes.Reader; a retry loop of our
+// own has to call it rather than hope.
+func rewind(ctx context.Context, req *http.Request) (*http.Request, error) {
+	next := req.Clone(ctx)
+	if req.GetBody == nil {
+		return next, nil
+	}
+
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, fmt.Errorf("rewind request body: %w", err)
+	}
+	next.Body = body
+	return next, nil
 }
 
 // send performs one attempt, and records how it went.
