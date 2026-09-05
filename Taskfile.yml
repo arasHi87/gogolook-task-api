@@ -1,0 +1,148 @@
+# Developer entrypoints. Everything CI runs is a task here, so a green `task ci`
+# locally means a green pipeline.
+#
+#   task            list the tasks
+#   task run        the API on the in-memory store, no dependencies
+#   task ci         vet, lint, test — what the pipeline runs
+version: "3"
+
+vars:
+  BIN: bin/taskapi
+  PKG: ./...
+  MODULE: github.com/arasHi87/gogolook-task-api
+  # Derived from git, overridable for a reproducible release build.
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo none
+  DATE:
+    sh: date -u +%Y-%m-%dT%H:%M:%SZ
+  LDFLAGS: >-
+    -s -w
+    -X main.version={{.VERSION}}
+    -X main.commit={{.COMMIT}}
+    -X main.date={{.DATE}}
+  COMPOSE: docker compose -f deploy/compose.yaml
+
+tasks:
+  default:
+    desc: List the available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  build:
+    desc: Compile the binary into bin/
+    sources:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+    generates:
+      - "{{.BIN}}"
+    cmds:
+      - CGO_ENABLED=0 go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.BIN}} ./cmd/taskapi
+
+  run:
+    desc: Run the API with the in-memory store (no Docker, no Postgres)
+    cmds:
+      - go run ./cmd/taskapi all {{.CLI_ARGS}}
+
+  fmt:
+    desc: Format the tree
+    cmds:
+      - gofmt -l -w $(git ls-files '*.go' | grep -v '^gen/')
+
+  vet:
+    desc: go vet
+    cmds:
+      - go vet {{.PKG}}
+
+  lint:
+    desc: golangci-lint
+    cmds:
+      - golangci-lint run --timeout=5m
+
+  test:
+    desc: Unit tests only (fast, no Docker)
+    cmds:
+      # -coverpkg so packages exercised from another package's tests — memrepo
+      # through internal/task, for one — are attributed honestly.
+      - go test -race -short -covermode=atomic -coverpkg={{.PKG}} -coverprofile=coverage.out {{.PKG}}
+
+  test:integration:
+    desc: Full suite including the testcontainers Postgres
+    cmds:
+      - go test -race -covermode=atomic -coverpkg={{.PKG}} -coverprofile=coverage.out {{.PKG}}
+
+  cover:
+    desc: Open the HTML coverage report
+    deps: [test]
+    cmds:
+      - go tool cover -html=coverage.out -o coverage.html
+      - echo "wrote coverage.html"
+
+  tidy:
+    desc: go mod tidy
+    cmds:
+      - go mod tidy
+
+  generate:
+    desc: Regenerate protobuf, Connect handlers and the OpenAPI document
+    sources:
+      - proto/**/*.proto
+      - buf.yaml
+      - buf.gen.yaml
+      - buf.lock
+    generates:
+      - gen/**/*.go
+      - docs/openapi.yaml
+    cmds:
+      - buf dep update
+      - buf format -w
+      - buf generate
+
+  generate:check:
+    desc: Fail if the generated output is stale (the CI drift gate)
+    cmds:
+      - task: generate
+      - |
+        git diff --exit-code -- gen docs/openapi.yaml proto \
+          || { echo "generated output is stale — run 'task generate' and commit"; exit 1; }
+
+  proto:lint:
+    desc: buf lint, and buf breaking against main
+    cmds:
+      - buf lint
+      - buf breaking --against '.git#branch=main' || true
+
+  docker:build:
+    desc: Build the container image
+    cmds:
+      - >-
+        docker build
+        --build-arg VERSION={{.VERSION}}
+        --build-arg COMMIT={{.COMMIT}}
+        --build-arg DATE={{.DATE}}
+        -t taskapi:{{.VERSION}} -t taskapi:latest .
+
+  up:
+    desc: Bring the local stack up (postgres, api, worker, prometheus, grafana)
+    cmds:
+      - "{{.COMPOSE}} up -d --build"
+
+  down:
+    desc: Tear the stack down, including volumes
+    cmds:
+      - "{{.COMPOSE}} down -v"
+
+  logs:
+    desc: Follow the stack logs
+    cmds:
+      - "{{.COMPOSE}} logs -f"
+
+  ci:
+    desc: Everything CI runs, locally
+    cmds:
+      - task: vet
+      - task: lint
+      - task: test
