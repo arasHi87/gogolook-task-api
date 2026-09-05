@@ -70,10 +70,23 @@ tasks:
       - go test -race -short -covermode=atomic -coverpkg={{.PKG}} -coverprofile=coverage.out {{.PKG}}
 
   test:integration:
-    desc: Full suite including the testcontainers Postgres
+    desc: Unit and integration tests against a real Postgres
     # Needs a Docker daemon. `task test` skips these with -short.
+    #
+    # test/e2e is excluded and has its own task: it builds and runs the binary,
+    # which is a different tier with a different failure mode, and burying it
+    # in a ./... run makes "the integration tests are slow" the diagnosis for a
+    # process that would not start.
     cmds:
-      - go test -race -covermode=atomic -coverpkg={{.PKG}} -coverprofile=coverage.out {{.PKG}}
+      - go test -race -covermode=atomic -coverpkg={{.PKG}} -coverprofile=coverage.out $(go list {{.PKG}} | grep -v '/test/e2e')
+
+  e2e:
+    desc: Live end-to-end suite — the shipped binary, real Postgres, two processes
+    # Builds the binary and runs it: api and worker as separate processes
+    # against a private database, driven over HTTP. Needs a Docker daemon.
+    # `task e2e -- -run TestCrashed` narrows it to one case.
+    cmds:
+      - go test -race -count=1 -timeout=20m ./test/e2e/... {{.CLI_ARGS}}
 
   migrate:
     desc: Apply the schema to the database in TASKAPI_STORAGE_POSTGRES_DSN
@@ -197,3 +210,12 @@ tasks:
       - task: lint
       - task: test
       - task: docker:check-go
+
+  verify:
+    desc: The full gate before a commit — ci, then the suites that need Docker
+    # ci is the fast half and runs first, so a formatting or vet failure costs
+    # seconds rather than the several minutes the container suites take.
+    cmds:
+      - task: ci
+      - task: test:integration
+      - task: e2e

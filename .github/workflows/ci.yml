@@ -50,6 +50,14 @@ jobs:
       - name: integration tests
         run: go test -race -count=1 ./internal/postgres/... ./internal/outbox/... ./internal/task/pgrepo/... ./internal/queue/...
 
+      # The suites above test parts. This one builds the binary that ships and
+      # runs it — api and worker as separate processes against a real database
+      # — so the seams they cannot reach are covered: flag and environment
+      # parsing, the config merge, signal handling, the drain, and a job
+      # crossing a process boundary.
+      - name: end-to-end tests
+        run: go test -race -count=1 -timeout=20m ./test/e2e/...
+
       - name: build
         run: go build -trimpath ./...
 
