@@ -56,10 +56,38 @@ func TestDeliverySendsDeduplicationHeaders(t *testing.T) {
 	if want := "42:1"; got.Get("Idempotency-Key") != want {
 		t.Errorf("Idempotency-Key = %q, want %q", got.Get("Idempotency-Key"), want)
 	}
-	// Per change: "you have seen this version of this task". Different
+	// Per change: "you have seen this change to this task". Different
 	// questions, so both are sent.
-	if want := event.TaskID.String() + ":1"; got.Get("X-Event-Id") != want {
+	//
+	// The event name leads. Without it a delete carries the same id as the
+	// update before it — a delete removes the row at its current version and
+	// invents no new one — and a receiver deduplicating on this header drops
+	// the deletion.
+	if want := event.ID(); got.Get("X-Event-Id") != want {
 		t.Errorf("X-Event-Id = %q, want %q", got.Get("X-Event-Id"), want)
+	}
+	if want := event.Event + ":" + event.TaskID.String() + ":1"; event.ID() != want {
+		t.Errorf("Event.ID() = %q, want %q", event.ID(), want)
+	}
+}
+
+// TestDeleteIsNotAReplayOfTheUpdateBeforeIt pins the collision down.
+//
+// A delete carries the version of the row it removed, so the update that set
+// that version and the delete that removed it describe different changes at
+// the same version. If their ids matched, a receiver following our own
+// instruction to deduplicate on X-Event-Id would silently drop every deletion.
+func TestDeleteIsNotAReplayOfTheUpdateBeforeIt(t *testing.T) {
+	t.Parallel()
+
+	updated := testEvent()
+	updated.Event = pgrepo.EventUpdated
+
+	deleted := testEvent()
+	deleted.Event = pgrepo.EventDeleted
+
+	if updated.ID() == deleted.ID() {
+		t.Fatalf("update and delete at version %d share the id %q", updated.Version, updated.ID())
 	}
 }
 

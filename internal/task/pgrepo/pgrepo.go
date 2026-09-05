@@ -182,10 +182,11 @@ func (r *Repo) write(
 		return nil, err
 	}
 
+	payload := eventFor(event, t)
 	if _, err := outbox.Enqueue(ctx, tx, outbox.Job{
 		Kind:      JobKind,
-		Payload:   eventFor(event, t),
-		UniqueKey: uniqueKey(event, t.ID, t.Version),
+		Payload:   payload,
+		UniqueKey: payload.ID(),
 	}); err != nil {
 		return nil, err
 	}

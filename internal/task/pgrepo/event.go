@@ -46,11 +46,23 @@ func eventFor(name string, t *task.Task) Event {
 	}
 }
 
-// uniqueKey deduplicates an event.
+// ID identifies the change this event describes: what happened, to which task,
+// at which version.
 //
-// The version is part of the key, so two updates produce two events but a
-// retry of the same update produces one. Without it, a caller that retries a
-// PUT after a timeout would deliver the same change twice.
-func uniqueKey(event string, id uuid.UUID, version int64) string {
-	return event + ":" + id.String() + ":" + itoa(version)
+// One string doing two jobs, and they have to agree. The outbox stores it as
+// unique_key, so the same change enqueued twice is one row; the delivery sends
+// it as X-Event-Id, so a receiver deduplicating on it drops exactly the
+// duplicates at-least-once produces.
+//
+// The event name is part of it, and that is not decoration. A delete carries
+// the version of the row it removed, which is the same version the update
+// before it carried — so an id of task-and-version alone makes the delete look
+// like a replay of the update, and a receiver doing what we told it to do
+// silently drops the deletion. The end-to-end suite caught exactly that.
+//
+// The version is part of it for the opposite reason: two updates are two
+// changes and must both be delivered, while a PUT retried after a timeout is
+// one change and must not be.
+func (e Event) ID() string {
+	return e.Event + ":" + e.TaskID.String() + ":" + itoa(e.Version)
 }

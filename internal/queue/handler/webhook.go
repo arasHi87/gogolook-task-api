@@ -73,7 +73,7 @@ func (w *Webhook) Handle(ctx context.Context, j *queue.Job) error {
 	// logical change, which are different questions: the first says "you have
 	// seen this exact delivery", the second says "you have seen this change".
 	req.Header.Set("Idempotency-Key", strconv.FormatInt(j.ID, 10)+":"+strconv.Itoa(j.Attempt))
-	req.Header.Set("X-Event-Id", event.TaskID.String()+":"+strconv.FormatInt(event.Version, 10))
+	req.Header.Set("X-Event-Id", event.ID())
 
 	resp, err := w.client.Do(req)
 	if err != nil {
