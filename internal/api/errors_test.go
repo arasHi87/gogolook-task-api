@@ -12,6 +12,7 @@ import (
 
 	taskv1 "github.com/arasHi87/gogolook-task-api/gen/task/v1"
 	"github.com/arasHi87/gogolook-task-api/internal/api"
+	"github.com/arasHi87/gogolook-task-api/internal/apperr"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 	"github.com/arasHi87/gogolook-task-api/internal/task/memrepo"
 )
@@ -43,7 +44,7 @@ func TestErrorMapping(t *testing.T) {
 	}{
 		"not found":            {task.ErrNotFound, connect.CodeNotFound},
 		"invalid argument":     {task.ErrInvalidArgument, connect.CodeInvalidArgument},
-		"field-scoped invalid": {&task.InvalidArgumentError{Field: "name", Reason: "too short"}, connect.CodeInvalidArgument},
+		"field-scoped invalid": {apperr.Field("name", "too short"), connect.CodeInvalidArgument},
 		"conflict":             {task.ErrConflict, connect.CodeAborted},
 		"canceled":             {context.Canceled, connect.CodeCanceled},
 		"deadline":             {context.DeadlineExceeded, connect.CodeDeadlineExceeded},

@@ -8,12 +8,13 @@
 package task
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/arasHi87/gogolook-task-api/internal/apperr"
 )
 
 // Status is the completion state. The specified contract is an integer with
@@ -74,35 +75,30 @@ func (t *Task) Clone() *Task {
 	return &c
 }
 
-// Sentinel errors. Callers match on these with errors.Is; internal/api maps
-// them to transport codes in exactly one place, so a storage error never leaks
-// to a client as itself.
+// Sentinel errors.
+//
+// They carry an apperr.Kind, so a transport maps them from one constant-size
+// table rather than from a case per package, and errors.Is still reads the way
+// it always has. Nothing here names a status code: the same error has to be
+// usable from the HTTP handler, from the queue worker, and from a test with no
+// transport at all.
 var (
 	// ErrNotFound is returned when no task has the requested id.
-	ErrNotFound = errors.New("task not found")
+	ErrNotFound = apperr.New(apperr.NotFound, "task not found")
+
 	// ErrInvalidArgument is returned when the caller's input is unusable.
-	ErrInvalidArgument = errors.New("invalid argument")
+	// Field-scoped problems below match it, because they are the same kind.
+	ErrInvalidArgument = apperr.New(apperr.Invalid, "invalid argument")
+
 	// ErrConflict is returned when an update's expected version does not match
 	// what is stored: someone else changed the task first.
-	ErrConflict = errors.New("version conflict")
+	ErrConflict = apperr.New(apperr.Conflict, "the task was modified by someone else")
 )
 
-// InvalidArgumentError names the offending field. Returning the field rather
-// than a sentence is what lets a client fix the request without guessing.
-type InvalidArgumentError struct {
-	Field  string
-	Reason string
-}
-
-func (e *InvalidArgumentError) Error() string {
-	return fmt.Sprintf("%s: %s", e.Field, e.Reason)
-}
-
-// Is makes errors.Is(err, ErrInvalidArgument) true for these.
-func (e *InvalidArgumentError) Is(target error) bool { return target == ErrInvalidArgument }
-
-func invalid(field, reason string) error {
-	return &InvalidArgumentError{Field: field, Reason: reason}
+// invalid names the offending input. The field reaches the client, because it
+// is the client's own input being described back to them.
+func invalid(field, format string, args ...any) error {
+	return apperr.Field(field, format, args...)
 }
 
 // ValidateName applies the name rule shared by create and update.
@@ -117,7 +113,7 @@ func ValidateName(name string) error {
 	case trimmed == "":
 		return invalid("name", "must not be empty")
 	case len(name) > MaxNameLength:
-		return invalid("name", fmt.Sprintf("must be at most %d characters, got %d", MaxNameLength, len(name)))
+		return invalid("name", "must be at most %d characters, got %d", MaxNameLength, len(name))
 	}
 	return nil
 }
@@ -125,7 +121,7 @@ func ValidateName(name string) error {
 // ValidateStatus applies the status rule.
 func ValidateStatus(s Status) error {
 	if !s.Valid() {
-		return invalid("status", fmt.Sprintf("must be 0 (incomplete) or 1 (completed), got %d", int32(s)))
+		return invalid("status", "must be 0 (incomplete) or 1 (completed), got %d", int32(s))
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/arasHi87/gogolook-task-api/internal/apperr"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 	"github.com/arasHi87/gogolook-task-api/internal/task/memrepo"
 )
@@ -86,13 +87,8 @@ func TestCreateValidation(t *testing.T) {
 			if !errors.Is(err, task.ErrInvalidArgument) {
 				t.Fatalf("Create = %v, want ErrInvalidArgument", err)
 			}
-
-			var detail *task.InvalidArgumentError
-			if !errors.As(err, &detail) {
-				t.Fatalf("Create = %v, want an error naming the field", err)
-			}
-			if detail.Field != tc.wantField {
-				t.Errorf("field = %q, want %q", detail.Field, tc.wantField)
+			if got := apperr.FieldOf(err); got != tc.wantField {
+				t.Errorf("field = %q, want %q", got, tc.wantField)
 			}
 		})
 	}

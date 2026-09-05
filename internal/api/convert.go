@@ -5,6 +5,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	taskv1 "github.com/arasHi87/gogolook-task-api/gen/task/v1"
+	"github.com/arasHi87/gogolook-task-api/internal/apperr"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 )
 
@@ -39,7 +40,7 @@ func toProtoList(ts []*task.Task) []*taskv1.Task {
 func parseID(raw string) (uuid.UUID, error) {
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		return uuid.Nil, &task.InvalidArgumentError{Field: "id", Reason: "must be a UUID"}
+		return uuid.Nil, apperr.Field("id", "must be a UUID")
 	}
 	return id, nil
 }

@@ -3,7 +3,6 @@ package task
 import (
 	"context"
 	"encoding/base64"
-	"fmt"
 	"strings"
 	"time"
 
@@ -150,11 +149,11 @@ func Less(a, b *Task) bool {
 func clampLimit(n int) (int, error) {
 	switch {
 	case n < 0:
-		return 0, invalid("page_size", fmt.Sprintf("must not be negative, got %d", n))
+		return 0, invalid("page_size", "must not be negative, got %d", n)
 	case n == 0:
 		return DefaultPageSize, nil
 	case n > MaxPageSize:
-		return 0, invalid("page_size", fmt.Sprintf("must be at most %d, got %d", MaxPageSize, n))
+		return 0, invalid("page_size", "must be at most %d, got %d", MaxPageSize, n)
 	default:
 		return n, nil
 	}

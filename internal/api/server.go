@@ -16,6 +16,7 @@ import (
 
 	taskv1 "github.com/arasHi87/gogolook-task-api/gen/task/v1"
 	"github.com/arasHi87/gogolook-task-api/gen/task/v1/taskv1connect"
+	"github.com/arasHi87/gogolook-task-api/internal/apperr"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 )
 
@@ -58,7 +59,7 @@ func (s *Server) CreateTask(
 ) (*connect.Response[taskv1.CreateTaskResponse], error) {
 	in := req.Msg.GetTask()
 	if in == nil {
-		return nil, toConnectError(ctx, &task.InvalidArgumentError{Field: "task", Reason: "must be present"})
+		return nil, toConnectError(ctx, apperr.Field("task", "must be present"))
 	}
 
 	// id, timestamps and version on the request are ignored rather than
@@ -86,7 +87,7 @@ func (s *Server) UpdateTask(
 	}
 	in := req.Msg.GetTask()
 	if in == nil {
-		return nil, toConnectError(ctx, &task.InvalidArgumentError{Field: "task", Reason: "must be present"})
+		return nil, toConnectError(ctx, apperr.Field("task", "must be present"))
 	}
 
 	// The path wins over the body's id. Two sources of truth for the same value
