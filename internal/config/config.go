@@ -15,6 +15,8 @@
 // file, and the compiler says so if a piece is missing.
 package config
 
+import "net"
+
 // Section is one self-describing configuration module.
 //
 // Implementations use pointer receivers on a struct embedded in Config, so
@@ -98,7 +100,13 @@ func (c *Config) Validate() error {
 // they relate two of them. Keeping them here, rather than letting one section
 // reach into another, is what keeps each section independently testable.
 func (c *Config) validateAcrossSections(p *Problems) {
-	if c.Admin.Addr == c.HTTP.Addr {
+	// Port 0 is exempt, and it is the one exemption that does not weaken the
+	// rule: it means "ask the kernel for a free port", so two listeners on it
+	// are guaranteed to get different ones. Rejecting it would ban ephemeral
+	// binding — which is what the end-to-end suite and any sandbox that
+	// cannot reserve fixed ports rely on — to prevent a collision that cannot
+	// happen.
+	if c.Admin.Addr == c.HTTP.Addr && !ephemeralPort(c.Admin.Addr) {
 		p.Add("admin.addr",
 			"must differ from http.addr: pprof and metrics must never be reachable on the public listener")
 	}
@@ -109,4 +117,10 @@ func (c *Config) validateAcrossSections(p *Problems) {
 		c.Webhook.Timeout > c.Breaker.Webhook.OpenDuration {
 		p.Add("webhook.timeout", "must not exceed breaker.webhook.open_duration")
 	}
+}
+
+// ephemeralPort reports whether addr asks the kernel to choose the port.
+func ephemeralPort(addr string) bool {
+	_, port, err := net.SplitHostPort(addr)
+	return err == nil && port == "0"
 }

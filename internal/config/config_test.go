@@ -58,6 +58,32 @@ func TestCrossSectionRules(t *testing.T) {
 		wantNoProblem(t, check(&c.HTTP))
 	})
 
+	t.Run("two ephemeral listeners are not a collision", func(t *testing.T) {
+		t.Parallel()
+		// Port 0 means "ask the kernel", so two listeners on it get different
+		// ports and the rule above has nothing to prevent. The end-to-end
+		// suite starts every listener this way.
+		c := config.Defaults()
+		c.HTTP.Addr = "127.0.0.1:0"
+		c.Admin.Addr = "127.0.0.1:0"
+
+		if err := c.Validate(); err != nil {
+			t.Fatalf("Validate = %v, want no problem", err)
+		}
+	})
+
+	t.Run("a fixed port shared by both listeners is still a collision", func(t *testing.T) {
+		t.Parallel()
+		c := config.Defaults()
+		c.HTTP.Addr = "127.0.0.1:8080"
+		c.Admin.Addr = "127.0.0.1:8080"
+
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "admin.addr") {
+			t.Fatalf("Validate = %v, want a problem naming admin.addr", err)
+		}
+	})
+
 	t.Run("a delivery attempt must fit inside the open window", func(t *testing.T) {
 		t.Parallel()
 		// A breaker whose open window is shorter than one attempt never gets to
