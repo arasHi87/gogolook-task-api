@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/arasHi87/gogolook-task-api/internal/outbox"
+	"github.com/arasHi87/gogolook-task-api/internal/postgres"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 )
 
@@ -165,17 +166,24 @@ func (r *Repo) List(ctx context.Context, q task.ListQuery) (task.Page, error) {
 // would still be delivered at commit — but a worker woken by a transaction
 // that then rolled back finds nothing, and one woken before the row is visible
 // is woken for no reason.
+//
+// The transaction may not be ours. When the caller has already opened one —
+// the idempotency middleware does, so that the key, its stored response and
+// the task all commit together — this joins it and leaves both the commit and
+// the notification to whoever owns it.
 func (r *Repo) write(
 	ctx context.Context,
 	event string,
 	fn func(context.Context, pgx.Tx) (*task.Task, error),
 ) (*task.Task, error) {
-	tx, err := r.pool.Begin(ctx)
+	tx, own, err := r.begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin: %w", err)
+		return nil, err
 	}
-	//nolint:errcheck // a rollback after a successful commit is a no-op
-	defer tx.Rollback(ctx)
+	if own {
+		//nolint:errcheck // a rollback after a successful commit is a no-op
+		defer tx.Rollback(ctx)
+	}
 
 	t, err := fn(ctx, tx)
 	if err != nil {
@@ -191,15 +199,40 @@ func (r *Repo) write(
 		return nil, err
 	}
 
+	notify := func(ctx context.Context) {
+		// Best-effort: the claim loop polls as well, so a lost notification
+		// costs latency and nothing else. Failing the write for it would be
+		// worse.
+		_ = outbox.Notify(ctx, r.pool, JobKind)
+	}
+
+	if !own {
+		// Registered rather than sent. A notification issued before the
+		// owner's commit points at a row nobody can see yet, and the worker it
+		// wakes goes back to sleep — turning the wake-up into a poll interval
+		// of latency.
+		postgres.AfterCommit(ctx, notify)
+		return t, nil
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
-
-	// Best-effort: the claim loop polls as well, so a lost notification costs
-	// latency and nothing else. Failing the write for it would be worse.
-	_ = outbox.Notify(ctx, r.pool, JobKind)
+	notify(ctx)
 
 	return t, nil
+}
+
+// begin returns the transaction to write in, and whether we own it.
+func (r *Repo) begin(ctx context.Context) (pgx.Tx, bool, error) {
+	if tx, ok := postgres.TxFrom(ctx); ok {
+		return tx, false, nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin: %w", err)
+	}
+	return tx, true, nil
 }
 
 // classifyMiss answers why an update matched no row.
