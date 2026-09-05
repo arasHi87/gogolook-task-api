@@ -52,7 +52,8 @@
           "legendFormat": "{{name}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -139,7 +140,8 @@
           "legendFormat": "{{name}} -> {{to}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -200,7 +202,8 @@
           "legendFormat": "p95 {{target}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": true
         },
         {
           "datasource": {
@@ -211,7 +214,8 @@
           "legendFormat": "p99 {{target}}",
           "refId": "B",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": true
         }
       ],
       "fieldConfig": {
@@ -284,7 +288,8 @@
           "legendFormat": "{{tier}} {{decision}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -345,7 +350,8 @@
           "legendFormat": "{{result}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -406,7 +412,8 @@
           "legendFormat": "buckets",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -467,7 +474,8 @@
           "legendFormat": "shed",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -540,7 +548,8 @@
           "legendFormat": "{{pool}} {{state}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         },
         {
           "datasource": {
@@ -551,7 +560,8 @@
           "legendFormat": "{{pool}} max",
           "refId": "B",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -612,7 +622,8 @@
           "legendFormat": "{{pool}} mean wait",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -685,7 +696,8 @@
           "legendFormat": "{{role}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -746,7 +758,8 @@
           "legendFormat": "{{role}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -807,7 +820,8 @@
           "legendFormat": "{{role}} max",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": true
         }
       ],
       "fieldConfig": {
@@ -868,7 +882,8 @@
           "legendFormat": "{{result}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {

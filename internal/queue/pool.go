@@ -8,6 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/arasHi87/gogolook-task-api/internal/apperr"
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
@@ -27,6 +32,9 @@ type PoolOptions struct {
 	Notify <-chan struct{}
 	// Observer receives claim statistics. Nil is fine.
 	Observer Observer
+	// Tracer starts a span per job. Nil means a no-op tracer, so the call
+	// sites below stay unconditional.
+	Tracer trace.Tracer
 }
 
 // Pool claims jobs and runs them.
@@ -50,6 +58,8 @@ type Pool struct {
 
 	// obs receives claim statistics; nil when nobody is listening.
 	obs Observer
+	// tracer starts a span per job. Never nil after NewPool.
+	tracer trace.Tracer
 
 	// draining stops the claim loop without cancelling running work.
 	draining chan struct{}
@@ -86,6 +96,7 @@ func NewPool(o PoolOptions) (*Pool, error) {
 		backoff:  NewBackoff(o.Config.Backoff),
 		notify:   o.Notify,
 		obs:      o.Observer,
+		tracer:   tracerOrNoop(o.Tracer),
 		inflight: make(map[int64]context.CancelFunc),
 		draining: make(chan struct{}),
 		subs:     make(map[int]chan Event),
@@ -250,15 +261,42 @@ func (p *Pool) run(ctx context.Context, j *Job) {
 		cancel()
 	}()
 
+	// A span per job, and a root one: the request that enqueued this finished
+	// long ago and its trace is closed. A link back to the producer would be
+	// the richer answer and needs the trace context stored on the row, which
+	// is noted in the README rather than built.
+	jobCtx, span := p.tracer.Start(jobCtx, "job "+j.Kind,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			attribute.Int64("job.id", j.ID),
+			attribute.String("job.kind", j.Kind),
+			attribute.Int("job.attempt", j.Attempt),
+			attribute.Int("job.max_attempts", j.MaxAttempts),
+			attribute.Float64("job.waited_seconds", j.Waited.Seconds()),
+		))
+	defer span.End()
+
 	started := time.Now()
 	err := p.invoke(jobCtx, j)
 	took := time.Since(started)
 	outcome := p.finish(ctx, j, err, took)
 
+	span.SetAttributes(attribute.String("job.outcome", string(outcome)))
+	if err != nil {
+		// Recorded, not necessarily an error status: a snooze and a retry are
+		// the system working, and marking them as errors makes every trace
+		// search for real failures useless.
+		span.RecordError(err)
+		if outcome == OutcomeDiscarded || outcome == OutcomeCancelled {
+			span.SetStatus(codes.Error, string(outcome))
+		}
+	}
+
 	p.publish(Event{
 		JobID: j.ID, Kind: j.Kind, Attempt: j.Attempt,
 		Outcome: outcome, Err: err,
 		Waited: j.Waited, Took: took,
+		TraceID: traceIDOf(jobCtx),
 	})
 }
 
@@ -531,4 +569,23 @@ func (p *Pool) wait(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
+}
+
+// tracerOrNoop keeps the span call sites unconditional. A nil check at each
+// span is where instrumentation quietly stops happening.
+func tracerOrNoop(t trace.Tracer) trace.Tracer {
+	if t != nil {
+		return t
+	}
+	return noop.NewTracerProvider().Tracer("queue")
+}
+
+// traceIDOf returns the sampled trace id, or "" — an unsampled id points at a
+// span nobody stored, and an exemplar linking to nothing is worse than none.
+func traceIDOf(ctx context.Context) string {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() || !sc.IsSampled() {
+		return ""
+	}
+	return sc.TraceID().String()
 }

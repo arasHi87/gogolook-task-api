@@ -25,8 +25,14 @@ DS = {"type": "prometheus", "uid": "prometheus"}
 OUT = pathlib.Path("deploy/grafana/dashboards")
 
 def target(expr, legend, instant=False):
+    # exemplar=True asks Prometheus for the trace pointers alongside the
+    # samples. Grafana draws them as diamonds under the line and, because the
+    # datasource maps trace_id to Tempo, each one is a link into the trace that
+    # produced that observation. It is only meaningful on a histogram, and
+    # asking for it elsewhere is a wasted round trip — hence the sniff below.
     return {"datasource": DS, "expr": expr, "legendFormat": legend,
-            "refId": chr(65), "instant": instant, "range": not instant}
+            "refId": chr(65), "instant": instant, "range": not instant,
+            "exemplar": "_bucket" in expr}
 
 def _targets(exprs):
     ts = []

@@ -19,6 +19,14 @@ x-image: &image
       DATE: ${DATE:-unknown}
   image: taskapi:${VERSION:-dev}
 
+# Sampling is 1.0 on a laptop: the demo is a few hundred requests and a
+# partial trace of it is a partial demo. A real deployment samples down and
+# keeps the tail with a tail-sampling processor.
+x-tracing-env: &tracing-env
+  TASKAPI_OBSERVABILITY_TRACING_ENABLED: "true"
+  TASKAPI_OBSERVABILITY_TRACING_OTLP_ENDPOINT: tempo:4317
+  TASKAPI_OBSERVABILITY_TRACING_SAMPLE_RATIO: "1.0"
+
 x-postgres-env: &postgres-env
   TASKAPI_STORAGE_BACKEND: postgres
   TASKAPI_STORAGE_POSTGRES_DSN: postgres://taskapi:${POSTGRES_PASSWORD:-taskapi}@postgres:5432/taskapi?sslmode=disable
@@ -78,7 +86,7 @@ services:
     <<: *image
     command: ["worker"]
     environment:
-      <<: *postgres-env
+      <<: [*postgres-env, *tracing-env]
       TASKAPI_LOGGING_FORMAT: json
       TASKAPI_LOGGING_LEVEL: ${LOG_LEVEL:-info}
       TASKAPI_WEBHOOK_URL: http://webhook-sink:8080/hook
@@ -136,15 +144,15 @@ services:
     # genuinely decoupled — and it makes "kill the worker mid-job and watch the
     # lease reaper" something you can do rather than something claimed.
     command: ["serve"]
+    environment:
+      <<: [*postgres-env, *tracing-env]
+      TASKAPI_LOGGING_FORMAT: json
+      TASKAPI_LOGGING_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "${API_PORT:-8080}:8080"
       # Published only so a reviewer can curl it. In a real deployment the
       # admin port stays on the cluster network and never leaves it.
       - "${ADMIN_PORT:-9090}:9090"
-    environment:
-      <<: *postgres-env
-      TASKAPI_LOGGING_FORMAT: json
-      TASKAPI_LOGGING_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -182,6 +190,9 @@ services:
       # Native histograms are what the service emits beside the classic
       # buckets; without this they are ignored on ingest.
       - --enable-feature=native-histograms
+      # Without this the exemplars are scraped and discarded, and the "view
+      # the trace behind this spike" button has nothing behind it.
+      - --enable-feature=exemplar-storage
       - --web.enable-lifecycle
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -228,7 +239,25 @@ services:
           cpus: "0.5"
           memory: 256M
 
+  # Traces. The third signal, and the only one that answers "where did the
+  # time go inside this one request".
+  tempo:
+    image: grafana/tempo:2.9.0
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "${TEMPO_PORT:-3200}:3200"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
 volumes:
   pgdata:
   prometheus-data:
   grafana-data:
+  tempo-data:

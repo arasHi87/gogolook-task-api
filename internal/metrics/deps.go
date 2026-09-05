@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -47,9 +48,9 @@ func newDeps(reg prometheus.Registerer, native bool) *Deps {
 	return d
 }
 
-// Request records one outbound call.
-func (d *Deps) Request(target, result string, took time.Duration) {
-	d.requests.WithLabelValues(target, result).Observe(took.Seconds())
+// Request records one outbound call, with the client span as an exemplar.
+func (d *Deps) Request(ctx context.Context, target, result string, took time.Duration) {
+	observeCtx(ctx, d.requests.WithLabelValues(target, result), took.Seconds())
 }
 
 // Retry records an attempt beyond the first.

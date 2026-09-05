@@ -1,0 +1,34 @@
+# Tempo, single-binary, local disk.
+#
+# Chosen over Jaeger for one reason that matters here: Grafana can link from a
+# Prometheus exemplar straight into a Tempo trace, and back out from a span to
+# the metrics around it. A trace store that is not joined to the metrics is a
+# second place to look rather than one fewer.
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+# One block per minute and a short retention: this is a laptop, and the demo is
+# minutes long. A real deployment writes to object storage with a retention
+# measured in days.
+ingester:
+  max_block_duration: 1m
+
+compactor:
+  compaction:
+    block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal

@@ -52,7 +52,8 @@
           "legendFormat": "",
           "refId": "A",
           "instant": true,
-          "range": false
+          "range": false,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -110,7 +111,8 @@
           "legendFormat": "",
           "refId": "A",
           "instant": true,
-          "range": false
+          "range": false,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -176,7 +178,8 @@
           "legendFormat": "",
           "refId": "A",
           "instant": true,
-          "range": false
+          "range": false,
+          "exemplar": true
         }
       ],
       "fieldConfig": {
@@ -242,7 +245,8 @@
           "legendFormat": "",
           "refId": "A",
           "instant": true,
-          "range": false
+          "range": false,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -312,7 +316,8 @@
           "legendFormat": "{{route}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -373,7 +378,8 @@
           "legendFormat": "{{status}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -446,7 +452,8 @@
           "legendFormat": "5xx ratio",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -507,7 +514,8 @@
           "legendFormat": "429 rate limited",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         },
         {
           "datasource": {
@@ -518,7 +526,8 @@
           "legendFormat": "503 load shed",
           "refId": "B",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -591,7 +600,8 @@
           "legendFormat": "p50",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": true
         },
         {
           "datasource": {
@@ -602,7 +612,8 @@
           "legendFormat": "p95",
           "refId": "B",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": true
         },
         {
           "datasource": {
@@ -613,7 +624,8 @@
           "legendFormat": "p99",
           "refId": "C",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": true
         }
       ],
       "fieldConfig": {
@@ -674,7 +686,8 @@
           "legendFormat": "{{route}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": true
         }
       ],
       "fieldConfig": {
@@ -747,7 +760,8 @@
           "legendFormat": "{{client_id}}",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": false
         }
       ],
       "fieldConfig": {
@@ -808,7 +822,8 @@
           "legendFormat": "p95 request",
           "refId": "A",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": true
         },
         {
           "datasource": {
@@ -819,7 +834,8 @@
           "legendFormat": "p95 response",
           "refId": "B",
           "instant": false,
-          "range": true
+          "range": true,
+          "exemplar": true
         }
       ],
       "fieldConfig": {

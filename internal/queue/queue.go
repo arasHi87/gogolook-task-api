@@ -153,6 +153,10 @@ type Event struct {
 	// where either interval starts.
 	Waited time.Duration
 	Took   time.Duration
+	// TraceID is the job's span, carried here because a subscriber reads this
+	// after the span has ended and has no context left to take it from. It is
+	// what makes a slow job on a dashboard one click from its trace.
+	TraceID string
 }
 
 // Observer receives the two things only the queue can see.

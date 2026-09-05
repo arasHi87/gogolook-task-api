@@ -87,7 +87,7 @@ manager, no libc, non-root by default. Its healthcheck is the binary probing
 itself (`/taskapi healthcheck`), because there is no curl in there to call.
 
 The full stack — Postgres, the API and the worker as separate processes, a
-webhook receiver, Prometheus and Grafana — is one command:
+webhook receiver, Prometheus, Grafana and Tempo — is one command:
 
 ```bash
 task up      # then http://localhost:3000 for the dashboards
@@ -309,6 +309,7 @@ task up && task load
 task dashboards:check     # runs all 49 panel queries against the live Prometheus
 ```
 
+
 That last command exists because a dashboard whose panels return nothing is worse
 than no dashboard — it reads as "the system is idle" rather than "this query is
 wrong". It found ten broken panels the first time it ran.
@@ -316,6 +317,44 @@ wrong". It found ten broken panels the first time it ran.
 The SLO alerts are multi-window multi-burn-rate (14.4×/6×/3×/1×) out of the SRE
 workbook. A single-window alert either fires on a five-minute blip or arrives six
 hours after the incident ended.
+
+### The three signals join
+
+A metric says the p99 moved and cannot say which request. A trace says where the
+time went in one request and cannot say whether that request was typical. A log
+says a thing happened. Separately they are three places to look; joined they are
+one investigation.
+
+- Every log record written inside a sampled span carries `trace_id` and
+  `span_id`. A handler does it, not the call sites, because the attribute that
+  has to be remembered is the one missing from the line that mattered.
+- Every latency histogram carries **exemplars** — a pointer from a bucket to a
+  span that landed in it. Grafana draws them as diamonds under the line, and the
+  datasource maps `trace_id` into Tempo, so a spike is one click from its trace.
+- Tempo links back the other way, from a span to the metrics around it.
+
+`task up` starts Tempo alongside the rest. A request trace looks like this, and
+the transactional outbox is visible in it — one transaction, two inserts:
+
+```
+POST /tasks                8.39 ms
+├─ pool.acquire            0.02 ms
+├─ BEGIN                   1.37 ms
+├─ INSERT                  0.47 ms      the task
+├─ INSERT                  0.72 ms      its event, same transaction
+├─ COMMIT                  1.46 ms
+└─ SELECT                  0.43 ms      pg_notify, after the commit
+```
+
+And the job, in the worker process, with the delivery nested inside it:
+
+```
+job task.event            11.54 ms   job.id=1 job.kind=task.event
+└─ HTTP POST               7.36 ms   job.attempt=1 job.outcome=succeeded
+```
+
+Sampling is `ParentBased`, so a decision made upstream is honoured: a trace
+sampled at the edge and dropped here is a trace with a hole in it.
 
 ## Operability
 
@@ -367,12 +406,14 @@ no half-written state. But a client that retries *after* the 24-hour TTL has
 expired will execute again. That is what a TTL means, and it is why the draft has
 one.
 
-## There is no tracing collector
+## A job's trace does not link back to the request that enqueued it
 
-`trace_id` plumbing and OTLP configuration exist; nothing is exported, because
-the collector is a stretch goal that was not reached. Exemplars linking a latency
-spike to the trace that caused it are the demo that would land, and they are not
-here.
+The job span is a root span. The request that enqueued the job finished long
+before, and its trace is closed — so the two are separate traces rather than one.
+Joining them means storing the W3C trace context on the `jobs` row at enqueue
+time and adding a span link at claim time, which is a column, four lines and a
+deliberate decision about whether a trace should span a queue boundary at all.
+It is noted rather than built.
 
 ## Other things worth naming
 
@@ -423,10 +464,11 @@ internal/
   auth/ ratelimit/    inbound guards: who you are, and how much you may have
   resilience/         outbound guard: timeout, retry, circuit breaker
   metrics/            the Prometheus surface, and the scrape-time collectors
+  tracing/            the OTLP provider, and the trace id everything joins on
   admin/              health, readiness, and the debug endpoints
   config/  logging/   one file per config section; three-tier structured logs
   httpx/  apperr/     middleware primitives; the shared error vocabulary
-deploy/               compose, Prometheus rules, provisioned Grafana
+deploy/               compose, Prometheus rules, Tempo, provisioned Grafana
 test/e2e/             the live suite
 test/demo/            crash, idempotency, rate limit, breaker
 ```

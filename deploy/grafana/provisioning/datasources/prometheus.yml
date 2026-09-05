@@ -1,8 +1,9 @@
-# The datasource, provisioned rather than clicked.
+# The datasources, provisioned rather than clicked.
 #
-# The uid is fixed and every dashboard references it by that literal. A
-# generated uid means the dashboards import with "datasource not found", which
-# is the usual reason a provisioned Grafana looks broken on first run.
+# The uids are fixed and every dashboard and every cross-link references them
+# by that literal. A generated uid means the dashboards import with "datasource
+# not found", which is the usual reason a provisioned Grafana looks broken on
+# first run.
 apiVersion: 1
 
 datasources:
@@ -15,3 +16,32 @@ datasources:
     jsonData:
       timeInterval: 5s
       httpMethod: POST
+      # The join. An exemplar on a latency histogram carries a trace_id label;
+      # this turns it into a link into Tempo, so a spike on a dashboard is one
+      # click from the trace that caused it. Without this the exemplars are
+      # stored, drawn as little diamonds, and go nowhere.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+          urlDisplayLabel: View trace
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # And the way back: from a span, the metrics around it. A trace store
+      # that is not joined to the metrics is a second place to look rather
+      # than one fewer.
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: -2m
+        spanEndTimeShift: 2m
+        queries:
+          - name: Request rate
+            query: sum(rate(http_server_requests_total[5m]))
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true

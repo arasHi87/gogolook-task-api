@@ -96,10 +96,15 @@ func newQueue(reg prometheus.Registerer, native bool) *Queue {
 func (q *Queue) Configured(n int) { q.workersConfigured.Set(float64(n)) }
 
 // Finished records the outcome of one job.
+//
+// The trace id travels on the event rather than in a context, because this is
+// read off a channel after the job's span has ended — there is no live context
+// left to take it from, and a slow job on the dashboard should still be one
+// click from the trace of the delivery that made it slow.
 func (q *Queue) Finished(e queue.Event) {
 	result := string(e.Outcome)
 	q.processed.WithLabelValues(e.Kind, result).Inc()
-	q.processing.WithLabelValues(e.Kind, result).Observe(e.Took.Seconds())
+	observe(q.processing.WithLabelValues(e.Kind, result), e.Took.Seconds(), e.TraceID)
 	if e.Waited > 0 {
 		q.wait.WithLabelValues(e.Kind).Observe(e.Waited.Seconds())
 	}

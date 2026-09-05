@@ -42,6 +42,7 @@ import (
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 	"github.com/arasHi87/gogolook-task-api/internal/task/memrepo"
 	"github.com/arasHi87/gogolook-task-api/internal/task/pgrepo"
+	"github.com/arasHi87/gogolook-task-api/internal/tracing"
 )
 
 // Mode selects which halves of the system this process runs.
@@ -103,6 +104,9 @@ type App struct {
 
 	// metrics is built before anything that reports into it.
 	metrics *metrics.Registry
+	// tracing is built first of all: the pool, the queue and the middleware
+	// chain all take a tracer from it.
+	tracing *tracing.Provider
 
 	// The queue runs only on the postgres backend: it is the outbox, and an
 	// in-memory store has no transaction to write one in.
@@ -142,8 +146,17 @@ func New(o Options) (*App, error) {
 		reloaded:   make(chan struct{}, 1),
 	}
 
-	// First, because everything below reports into it.
+	// First, because everything below reports into them.
 	a.metrics = metrics.New(o.Config.Observability.Metrics)
+
+	traces, err := tracing.New(
+		o.Config.Observability.Tracing,
+		o.Config.Service.Name, o.Config.Service.Instance, o.Logger.Logger,
+	)
+	if err != nil {
+		return nil, err
+	}
+	a.tracing = traces
 
 	repo, err := a.newRepository(o.Config)
 	if err != nil {
@@ -240,6 +253,7 @@ func (a *App) newQueue(cfg *config.Config, log *slog.Logger) error {
 		URL:      cfg.Webhook.URL,
 		Timeout:  cfg.Webhook.Timeout.D(),
 		Observer: a.metrics.Deps,
+		Trace:    cfg.Observability.Tracing.Enabled,
 		Guard: resilience.New(resilience.Options{
 			Name:      "webhook",
 			Breaker:   cfg.Breaker.Webhook,
@@ -264,6 +278,7 @@ func (a *App) newQueue(cfg *config.Config, log *slog.Logger) error {
 		Logger:   log,
 		Notify:   a.listener.Notifications(),
 		Observer: a.metrics.Queue,
+		Tracer:   a.tracing.Tracer(),
 	})
 	if err != nil {
 		return err
@@ -320,6 +335,7 @@ func (a *App) newAPIServer(cfg *config.Config) (*http.Server, error) {
 		RateLimit:         a.limiter,
 		GlobalInflight:    inflightLimit(cfg),
 		Metrics:           a.metrics,
+		Tracing:           cfg.Observability.Tracing.Enabled,
 	})
 	if err != nil {
 		return nil, err
@@ -429,7 +445,8 @@ func (a *App) newRepository(cfg *config.Config) (task.Repository, error) {
 		if a.mode == ModeWorker {
 			role = postgres.RoleWorker
 		}
-		pool, err := postgres.Open(context.Background(), cfg.Storage.Postgres, role, cfg.Service.Instance)
+		pool, err := postgres.OpenTraced(context.Background(), cfg.Storage.Postgres, role,
+			cfg.Service.Instance, cfg.Observability.Tracing.Enabled)
 		if err != nil {
 			return nil, err
 		}
@@ -481,8 +498,10 @@ func (a *App) workers() []Worker {
 	//   ratelimit-sweeper
 	//                   housekeeping loops; nothing waits on them.
 	//   config-reloader a reload racing a shutdown helps nobody.
-	//   admin           last, so health and metrics answer for the whole
+	//   admin           near last, so health and metrics answer for the whole
 	//                   drain rather than going dark at the start of it.
+	//   tracing         last of all, flushing the spans every worker above it
+	//                   produced on its way out.
 	ws = append(ws, Worker{
 		Name: "readiness",
 		Run:  waitForShutdown,
@@ -528,6 +547,15 @@ func (a *App) workers() []Worker {
 
 	ws = append(ws, Worker{Name: "config-reloader", Run: a.runReloader})
 	ws = append(ws, serveWorker("admin", a.adminServer, a.log.Logger))
+
+	// Last, and it has to be: the exporter batches for up to five seconds, so
+	// a process that exits without flushing loses the spans from whatever
+	// caused the restart — which is the one trace anybody wanted.
+	ws = append(ws, Worker{
+		Name: "tracing",
+		Run:  waitForShutdown,
+		Stop: a.tracing.Shutdown,
+	})
 
 	return ws
 }

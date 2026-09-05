@@ -213,6 +213,7 @@ tasks:
         echo "  admin      http://localhost:${ADMIN_PORT:-9090}/metrics"
         echo "  Prometheus http://localhost:${PROMETHEUS_PORT:-9092}"
         echo "  Grafana    http://localhost:${GRAFANA_PORT:-3000}"
+        echo "  Tempo      http://localhost:${TEMPO_PORT:-3200}"
 
   down:
     desc: Tear the stack down, including volumes

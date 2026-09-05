@@ -16,6 +16,7 @@ import (
 	"connectrpc.com/connect"
 	"connectrpc.com/validate"
 	"connectrpc.com/vanguard"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/arasHi87/gogolook-task-api/docs"
 	"github.com/arasHi87/gogolook-task-api/gen/task/v1/taskv1connect"
@@ -53,6 +54,8 @@ type Options struct {
 	// Metrics instruments the chain. Nil serves without instrumentation, which
 	// is what the contract test wants.
 	Metrics *metrics.Registry
+	// Tracing produces a server span per request. Nil serves untraced.
+	Tracing bool
 
 	// handler replaces the transcoder. Unexported because it exists only so a
 	// test can drive the real middleware chain around a handler that misbehaves
@@ -124,8 +127,12 @@ func (o Options) transcoder() (http.Handler, error) {
 //
 // Outermost first, and the order is load-bearing:
 //
-//	Metrics     outermost, so every request is counted — including the ones
-//	            the limiters refuse before any work is done.
+//	Tracing     outermost, so the span covers everything below it — including
+//	            the time a request spends queued behind the in-flight limiter,
+//	            which is exactly the latency nobody can otherwise account for.
+//	Metrics     next, so every request is counted — including the ones the
+//	            limiters refuse before any work is done — and so the exemplar
+//	            it attaches has a span to point at.
 //	RequestID   before everything else, so the id exists for every log line and
 //	            every error body — including the ones Recover writes.
 //	Logger      outside Recover, so a recovered panic is still recorded as the
@@ -150,6 +157,9 @@ func (o Options) transcoder() (http.Handler, error) {
 //	            out of the chain looking like any other response.
 func wrap(h http.Handler, o Options) http.Handler {
 	var mw []httpx.Middleware
+	if o.Tracing {
+		mw = append(mw, tracingMiddleware())
+	}
 	if o.Metrics != nil {
 		// Outermost, so a request refused by the in-flight limiter or the rate
 		// limiter is still counted. A 429 missing from the request rate is a
@@ -189,4 +199,28 @@ func wrap(h http.Handler, o Options) http.Handler {
 		mw = append(mw, idempotency.Middleware(o.Idempotency, o.IdempotencyConfig))
 	}
 	return httpx.Chain(h, mw...)
+}
+
+// tracingMiddleware starts a server span per request.
+//
+// The route is templated for the span name for the same reason it is for the
+// metric label: a span name built from the raw URL makes every trace search a
+// prefix match, and the backend groups by name.
+func tracingMiddleware() httpx.Middleware {
+	return func(next http.Handler) http.Handler {
+		return otelhttp.NewHandler(next, "http",
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				return r.Method + " " + httpx.Route(r.URL.Path)
+			}),
+			// Health and metrics are scraped every few seconds forever. Tracing
+			// them buys nothing and drowns the traces that matter.
+			otelhttp.WithFilter(func(r *http.Request) bool {
+				switch r.URL.Path {
+				case "/healthz", "/readyz", "/metrics", "/version":
+					return false
+				}
+				return true
+			}),
+		)
+	}
 }

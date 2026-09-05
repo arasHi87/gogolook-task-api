@@ -96,7 +96,9 @@ func (h *HTTP) Middleware() httpx.Middleware {
 			client := auth.From(r.Context()).ClientID
 
 			h.requests.WithLabelValues(method, route, status, client).Inc()
-			h.duration.WithLabelValues(method, route, status).Observe(elapsed.Seconds())
+			// With an exemplar: this is the histogram a latency alert fires
+			// off, so it is the one worth being able to click through from.
+			observeCtx(r.Context(), h.duration.WithLabelValues(method, route, status), elapsed.Seconds())
 			h.respSize.WithLabelValues(method, route).Observe(float64(rec.written))
 			if r.ContentLength > 0 {
 				h.reqSize.WithLabelValues(method, route).Observe(float64(r.ContentLength))

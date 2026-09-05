@@ -17,6 +17,7 @@ import (
 
 	"github.com/failsafe-go/failsafe-go/budget"
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/arasHi87/gogolook-task-api/internal/apperr"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
@@ -50,6 +51,8 @@ type Options struct {
 	Guard *resilience.Executor
 	// Observer records outbound latency and retries. Nil is fine.
 	Observer Observer
+	// Trace wraps the client so each attempt is a span and carries traceparent.
+	Trace bool
 }
 
 // Observer receives outbound call statistics, for metrics.
@@ -57,7 +60,7 @@ type Options struct {
 // An interface declared here and satisfied elsewhere, so this package never
 // imports the metrics registry.
 type Observer interface {
-	Request(target, result string, took time.Duration)
+	Request(ctx context.Context, target, result string, took time.Duration)
 	Retry(target string)
 }
 
@@ -71,6 +74,16 @@ func NewWebhook(o Options) *Webhook {
 	client := o.Client
 	if client == nil {
 		client = &http.Client{Timeout: o.Timeout}
+	}
+	if o.Trace {
+		// A client span per attempt, and — the part that matters — the
+		// traceparent header on the wire. Without the propagator the spans are
+		// still produced and the trace still stops at our own process
+		// boundary, which is the failure that looks most like tracing working.
+		client = &http.Client{
+			Timeout:   client.Timeout,
+			Transport: otelhttp.NewTransport(client.Transport),
+		}
 	}
 	return &Webhook{url: o.URL, client: client, timeout: o.Timeout, guard: o.Guard, obs: o.Observer}
 }
@@ -177,19 +190,19 @@ func (w *Webhook) send(req *http.Request) error {
 	resp, err := w.client.Do(req)
 	if err != nil {
 		// A transport failure is the dependency's problem, not the job's.
-		w.observe("error", time.Since(started))
+		w.observe(req.Context(), "error", time.Since(started))
 		return apperr.Wrap(apperr.Unavailable, err, "webhook delivery failed")
 	}
 	defer resp.Body.Close() //nolint:errcheck // response body is discarded
 
 	outcome := classify(resp.StatusCode)
-	w.observe(resultOf(outcome), time.Since(started))
+	w.observe(req.Context(), resultOf(outcome), time.Since(started))
 	return outcome
 }
 
-func (w *Webhook) observe(result string, took time.Duration) {
+func (w *Webhook) observe(ctx context.Context, result string, took time.Duration) {
 	if w.obs != nil {
-		w.obs.Request(target, result, took)
+		w.obs.Request(ctx, target, result, took)
 	}
 }
 

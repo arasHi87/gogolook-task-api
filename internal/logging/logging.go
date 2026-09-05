@@ -157,7 +157,10 @@ func decorate(h slog.Handler, o Options) slog.Handler {
 	if !o.NoThrottle {
 		h = NewThrottleHandler(h, throttleWindow)
 	}
-	return h
+	// Outermost, so it stamps every record that survives throttling. Inside
+	// the throttler it would stamp records that are then dropped, and the
+	// suppressed count would carry one arbitrary trace id.
+	return NewTraceHandler(h)
 }
 
 // withBaseAttrs attaches the identity every record carries.

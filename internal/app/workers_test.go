@@ -59,9 +59,14 @@ func TestWorkerTableIsInDrainOrder(t *testing.T) {
 		//
 		// ratelimit-sweeper runs only where there is a public listener: a
 		// worker has no callers to meter.
-		ModeServe:  {"readiness", "api", "idempotency-purge", "ratelimit-sweeper", "config-reloader", "admin"},
-		ModeAll:    {"readiness", "api", "idempotency-purge", "ratelimit-sweeper", "config-reloader", "admin"},
-		ModeWorker: {"readiness", "idempotency-purge", "config-reloader", "admin"},
+		//
+		// tracing is last of all, flushing the spans every worker above it
+		// produced on its way out. The exporter batches for seconds, so a
+		// process that exits without it loses the trace of whatever caused
+		// the restart.
+		ModeServe:  {"readiness", "api", "idempotency-purge", "ratelimit-sweeper", "config-reloader", "admin", "tracing"},
+		ModeAll:    {"readiness", "api", "idempotency-purge", "ratelimit-sweeper", "config-reloader", "admin", "tracing"},
+		ModeWorker: {"readiness", "idempotency-purge", "config-reloader", "admin", "tracing"},
 	}
 
 	for mode, want := range cases {

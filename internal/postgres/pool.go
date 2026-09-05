@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/arasHi87/gogolook-task-api/internal/config"
@@ -37,9 +38,29 @@ const (
 // startup failure with a clear message rather than a confusing error on the
 // first request.
 func Open(ctx context.Context, cfg config.Postgres, role Role, instance string) (*pgxpool.Pool, error) {
+	return OpenTraced(ctx, cfg, role, instance, false)
+}
+
+// OpenTraced is Open with a span per statement.
+//
+// Separate rather than a field on config.Postgres, because whether the process
+// exports traces is a property of the deployment and not of the connection —
+// and the migrator, which opens a pool to run DDL and then exits, has nothing
+// to say to a collector.
+func OpenTraced(ctx context.Context, cfg config.Postgres, role Role, instance string, tracing bool) (*pgxpool.Pool, error) {
 	pc, err := poolConfig(cfg, role, instance)
 	if err != nil {
 		return nil, err
+	}
+	if tracing {
+		// The statement text becomes the span name, which is safe here and
+		// would not be with string-concatenated SQL: every query in this
+		// service is a constant with bind parameters, so the name set is
+		// bounded by the code.
+		pc.ConnConfig.Tracer = otelpgx.NewTracer(
+			otelpgx.WithTrimSQLInSpanName(),
+			otelpgx.WithDisableQuerySpanNamePrefix(),
+		)
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, pc)
