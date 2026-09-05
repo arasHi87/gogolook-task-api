@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"github.com/arasHi87/gogolook-task-api/internal/admin"
 	"github.com/arasHi87/gogolook-task-api/internal/buildinfo"
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
@@ -71,8 +72,10 @@ type App struct {
 
 	// Wired once in New so a misconfiguration is a startup error rather than a
 	// surprise on the first request.
-	tasks     *task.Service
-	apiServer *http.Server
+	tasks       *task.Service
+	apiServer   *http.Server
+	adminServer *http.Server
+	health      *admin.Handler
 
 	closers []func() error
 }
@@ -117,7 +120,30 @@ func New(o Options) (*App, error) {
 			return nil, err
 		}
 	}
+
+	// The admin listener runs in every mode, including worker: a process with
+	// no public port still has to be scrapeable and probeable.
+	a.health = admin.New(a.readinessChecks()...)
+	a.adminServer = newHTTPServer(adminHTTP(o.Config), a.health.Mux(), o.Logger.Logger, "admin")
+
 	return a, nil
+}
+
+// readinessChecks are the dependencies this process needs to serve.
+//
+// There are none on the memory backend, which is correct rather than lazy: it
+// has no dependency that can be down. The Postgres pool registers one here.
+func (a *App) readinessChecks() []admin.Check {
+	return nil
+}
+
+// adminHTTP borrows the public listener's timeouts for the private one. They
+// are the same kind of server with the same failure modes, and a second set of
+// knobs nobody tunes is a second set of knobs to get wrong.
+func adminHTTP(cfg *config.Config) config.HTTP {
+	h := cfg.HTTP
+	h.Addr = cfg.Admin.Addr
+	return h
 }
 
 // validate checks the wiring contract. These are programming errors, not
@@ -192,17 +218,39 @@ func (a *App) Logger() *logging.Handle { return a.log }
 func (a *App) workers() []Worker {
 	var ws []Worker
 
-	// Drain order, top to bottom. The public listener goes first: stop
-	// accepting new work before anything that might be needed to finish the
-	// work already accepted is taken away.
+	// Drain order, top to bottom, and each position is a decision:
+	//
+	//   readiness       first, so a load balancer stops routing here before
+	//                   the listener stops accepting. The requests that arrive
+	//                   in that window are still served.
+	//   api             stop accepting, finish what was accepted.
+	//   config-reloader a reload racing a shutdown helps nobody.
+	//   admin           last, so health and metrics answer for the whole
+	//                   drain rather than going dark at the start of it.
+	ws = append(ws, Worker{
+		Name: "readiness",
+		Run:  waitForShutdown,
+		Stop: func(context.Context) error {
+			a.health.StartDraining()
+			a.log.Info("readiness flipped to not-ready, draining")
+			return nil
+		},
+	})
+
 	if a.apiServer != nil {
 		ws = append(ws, serveWorker("api", a.apiServer, a.log.Logger))
 	}
 
-	// Last, because a config reload racing a shutdown helps nobody.
 	ws = append(ws, Worker{Name: "config-reloader", Run: a.runReloader})
+	ws = append(ws, serveWorker("admin", a.adminServer, a.log.Logger))
 
 	return ws
+}
+
+// waitForShutdown is the Run of a worker whose whole job is its Stop.
+func waitForShutdown(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
 }
 
 // Run starts every worker and blocks until ctx is cancelled or one of them

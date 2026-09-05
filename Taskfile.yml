@@ -129,8 +129,23 @@ tasks:
         for dir in proto/*/; do rm -rf ".proto-deps/$(basename "$dir")"; done
       - echo "exported to .proto-deps"
 
+  docker:check-go:
+    desc: Fail if the Dockerfile builds with an older Go than go.mod requires
+    # There is no way for a Dockerfile to read go.mod, so the two are pinned
+    # together here instead of by hope.
+    silent: true
+    cmds:
+      - |
+        want=$(awk '/^go /{print $2}' go.mod | cut -d. -f1,2)
+        have=$(awk -F'golang:' '/^FROM golang:/{split($2,a,"-"); print a[1]}' Dockerfile | cut -d. -f1,2)
+        if [ "$(printf '%s\n%s\n' "$want" "$have" | sort -V | head -1)" != "$want" ]; then
+          echo "Dockerfile builds with Go $have but go.mod requires $want"; exit 1
+        fi
+        echo "Dockerfile Go $have satisfies go.mod $want"
+
   docker:build:
     desc: Build the container image
+    deps: [docker:check-go]
     cmds:
       - >-
         docker build
@@ -160,3 +175,4 @@ tasks:
       - task: vet
       - task: lint
       - task: test
+      - task: docker:check-go

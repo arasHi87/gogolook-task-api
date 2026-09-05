@@ -1,0 +1,51 @@
+# The local stack.
+#
+# At this milestone it is the API alone on the in-memory store, which is all
+# the exercise requires. Postgres, the queue worker, the webhook sink,
+# Prometheus and Grafana join it as the milestones that need them land, and
+# `api` and `worker` will run the same image with different subcommands —
+# which is what shows the queue is genuinely decoupled.
+name: taskapi
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-none}
+        DATE: ${DATE:-unknown}
+    image: taskapi:${VERSION:-dev}
+    command: ["all"]
+    ports:
+      - "${API_PORT:-8080}:8080"
+      # The admin port is published only so a reviewer can curl it. In a real
+      # deployment it stays on the cluster network and never leaves it.
+      - "${ADMIN_PORT:-9090}:9090"
+    environment:
+      # Every knob is reachable this way; see `taskapi all --print-config`.
+      TASKAPI_LOGGING_FORMAT: json
+      TASKAPI_LOGGING_LEVEL: ${LOG_LEVEL:-info}
+      TASKAPI_STORAGE_BACKEND: memory
+    # The image is distroless and has no shell, so the binary probes itself.
+    healthcheck:
+      test: ["CMD", "/taskapi", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # Limits on every service, so `docker compose up` cannot eat the reviewer's
+    # laptop while they are reading the README.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL

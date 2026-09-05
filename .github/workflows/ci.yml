@@ -81,6 +81,56 @@ jobs:
           git diff --exit-code -- gen docs/openapi.yaml \
             || { echo "::error::generated output is stale — run 'task generate' and commit"; exit 1; }
 
+  image:
+    name: container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # The Dockerfile cannot read go.mod, so the two are pinned together here.
+      - name: Dockerfile Go version satisfies go.mod
+        run: |
+          want=$(awk '/^go /{print $2}' go.mod | cut -d. -f1,2)
+          have=$(awk -F'golang:' '/^FROM golang:/{split($2,a,"-"); print a[1]}' Dockerfile | cut -d. -f1,2)
+          if [ "$(printf '%s\n%s\n' "$want" "$have" | sort -V | head -1)" != "$want" ]; then
+            echo "::error::Dockerfile builds with Go $have but go.mod requires $want"; exit 1
+          fi
+
+      - name: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: taskapi:ci
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A green build is not a working image. This is the cheapest possible
+      # proof that the thing actually serves the contract.
+      - name: the image serves the required endpoints
+        run: |
+          docker run -d --name taskapi -p 8080:8080 -p 9090:9090 taskapi:ci
+          for i in $(seq 1 60); do
+            [ "$(docker inspect --format '{{.State.Health.Status}}' taskapi)" = healthy ] && break
+            sleep 1
+          done
+          docker inspect --format '{{.State.Health.Status}}' taskapi | grep -q healthy
+
+          id=$(curl -sf -X POST localhost:8080/tasks \
+                 -H 'Content-Type: application/json' \
+                 -d '{"name":"ci","status":0}' | jq -r .id)
+          curl -sf "localhost:8080/tasks" | jq -e ".result | length == 1"
+          curl -sf -X PUT "localhost:8080/tasks/$id" \
+                 -H 'Content-Type: application/json' \
+                 -d '{"name":"ci","status":1}' | jq -e '.status == 1'
+          curl -sf -X DELETE "localhost:8080/tasks/$id"
+          curl -sf localhost:9090/readyz | jq -e '.status == "ready"'
+          docker rm -f taskapi
+
   lint:
     name: lint
     runs-on: ubuntu-latest

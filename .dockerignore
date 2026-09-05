@@ -1,15 +1,37 @@
+# Everything the image does not need. Kept deliberately tight: a smaller
+# context is a faster build, but excluding something the compiler needs fails
+# with a confusing "no Go files" rather than an obvious missing-file error.
+#
+# docs/ is NOT excluded. It looks like documentation but it is a Go package:
+# docs/docs.go embeds openapi.yaml and internal/runtime imports it.
+
 .git
 .github
 .gitignore
 .dockerignore
+.vscode
+.idea
+
+# Local development artefacts
 go.work
 go.work.sum
-.env
-deploy/
-docs/
-test/load/
+.task/
+.proto-deps/
 bin/
 dist/
-*.md
-!README.md
 coverage.*
+*.test
+
+# Secrets
+.env
+
+# Not compiled into the binary
+deploy/
+test/
+proto/
+buf.yaml
+buf.gen.yaml
+buf.lock
+Taskfile.yml
+.golangci.yml
+*.md
