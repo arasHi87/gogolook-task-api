@@ -38,7 +38,7 @@ jobs:
       # -race and -covermode=atomic together: the queue is a concurrency
       # exercise, so a data race is a test failure, not a warning.
       - name: unit tests
-        run: go test -race -short -covermode=atomic -coverprofile=coverage.out ./...
+        run: go test -race -short -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
 
       - name: coverage summary
         run: go tool cover -func=coverage.out | tail -1

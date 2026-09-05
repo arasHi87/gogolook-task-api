@@ -39,7 +39,12 @@ const (
 // real table has. No business fields are invented.
 type Task struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Server-assigned identifier. Ignored on create.
+	// Server-assigned identifier. Ignored on create and on update, where the
+	// path is authoritative.
+	//
+	// IGNORE_IF_ZERO_VALUE, not a plain uuid rule: a create request has no id to
+	// send, and rejecting it for the absence of a field the server assigns would
+	// make the endpoint unusable. A non-empty id is still checked.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// What the task is. Required, 1-255 characters.
 	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
@@ -532,9 +537,9 @@ var File_task_v1_task_proto protoreflect.FileDescriptor
 
 const file_task_v1_task_proto_rawDesc = "" +
 	"\n" +
-	"\x12task/v1/task.proto\x12\atask.v1\x1a\x1bbuf/validate/validate.proto\x1a$gnostic/openapi/v3/annotations.proto\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf3\x01\n" +
-	"\x04Task\x12\x18\n" +
-	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\x12\x1e\n" +
+	"\x12task/v1/task.proto\x12\atask.v1\x1a\x1bbuf/validate/validate.proto\x1a$gnostic/openapi/v3/annotations.proto\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf6\x01\n" +
+	"\x04Task\x12\x1b\n" +
+	"\x02id\x18\x01 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x02id\x12\x1e\n" +
 	"\x04name\x18\x02 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x12!\n" +
 	"\x06status\x18\x03 \x01(\x05B\t\xbaH\x06\x1a\x040\x000\x01R\x06status\x129\n" +

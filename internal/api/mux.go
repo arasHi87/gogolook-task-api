@@ -1,0 +1,90 @@
+package api
+
+import (
+	"fmt"
+	"net/http"
+
+	"connectrpc.com/connect"
+	"connectrpc.com/validate"
+	"connectrpc.com/vanguard"
+
+	"github.com/arasHi87/gogolook-task-api/docs"
+	"github.com/arasHi87/gogolook-task-api/gen/task/v1/taskv1connect"
+	"github.com/arasHi87/gogolook-task-api/internal/httpx"
+	"github.com/arasHi87/gogolook-task-api/internal/task"
+)
+
+// MuxOptions configures the public HTTP surface.
+type MuxOptions struct {
+	// Service is the domain.
+	Service *task.Service
+	// MaxBodyBytes caps request bodies. Zero disables the cap.
+	MaxBodyBytes int64
+
+	// handler replaces the transcoder. Unexported because it exists only so a
+	// test can drive the real middleware chain around a handler that misbehaves
+	// on purpose; there is no way to set it from outside the package.
+	handler http.Handler
+}
+
+// NewMux builds the public handler: the REST routes from the specification, the
+// native Connect and gRPC surface, and the API documentation.
+//
+// One mux, one port, one handler implementation. vanguard reads the same
+// google.api.http annotations the OpenAPI document was generated from and
+// transcodes REST onto the Connect handler, so the routes that are served and
+// the routes that are documented come from one source and cannot drift.
+func NewMux(o MuxOptions) (http.Handler, error) {
+	if o.Service == nil {
+		return nil, fmt.Errorf("api: a task service is required")
+	}
+
+	// protovalidate enforces the constraints declared in the proto: the status
+	// enum, the name length, the uuid format. Declared once, checked here, and
+	// published in the OpenAPI — no hand-written validation to fall out of step.
+	validator := validate.NewInterceptor()
+
+	path, handler := taskv1connect.NewTaskServiceHandler(
+		NewServer(o.Service),
+		connect.WithInterceptors(validator),
+		connect.WithCodec(connectJSONCodec{}),
+	)
+
+	transcoder, err := vanguard.NewTranscoder(
+		[]*vanguard.Service{vanguard.NewService(path, handler)},
+		vanguard.WithCodec(newJSONCodec),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("api: build transcoder: %w", err)
+	}
+
+	mux := http.NewServeMux()
+	docs.Handler(mux)
+	// Everything else — the eight REST routes and the Connect procedures — is
+	// routed by the transcoder from the proto annotations.
+	if o.handler != nil {
+		mux.Handle("/", o.handler) // test seam; see MuxOptions.handler
+	} else {
+		mux.Handle("/", transcoder)
+	}
+
+	// Outermost first, and the order is load-bearing:
+	//
+	//   RequestID   before everything, so the id exists for every log line and
+	//               every error body — including the ones Recover writes.
+	//   Logger      outside Recover, so a recovered panic is still recorded as
+	//               the 500 it became rather than as a request with no outcome.
+	//   Recover     inside both, so a panic in any middleware below it or in
+	//               the handler produces a response instead of a dropped
+	//               connection.
+	//   Deprecation before the handler, because headers must be set before
+	//               anything writes.
+	//   MaxBody     innermost, closest to whatever reads the body.
+	return httpx.Chain(mux,
+		httpx.RequestID(),
+		httpx.Logger(),
+		httpx.Recover(),
+		httpx.Deprecation(),
+		httpx.MaxBody(o.MaxBodyBytes),
+	), nil
+}

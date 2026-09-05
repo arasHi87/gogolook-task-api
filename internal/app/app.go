@@ -17,13 +17,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 
 	"github.com/spf13/pflag"
 
+	"github.com/arasHi87/gogolook-task-api/internal/api"
 	"github.com/arasHi87/gogolook-task-api/internal/buildinfo"
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
+	"github.com/arasHi87/gogolook-task-api/internal/task"
+	"github.com/arasHi87/gogolook-task-api/internal/task/memrepo"
 )
 
 // Mode selects which halves of the system this process runs.
@@ -65,6 +69,11 @@ type App struct {
 	// reloaded is signalled after each successful reload; tests wait on it.
 	reloaded chan struct{}
 
+	// Wired once in New so a misconfiguration is a startup error rather than a
+	// surprise on the first request.
+	tasks     *task.Service
+	apiServer *http.Server
+
 	closers []func() error
 }
 
@@ -93,15 +102,53 @@ func New(o Options) (*App, error) {
 		return nil, fmt.Errorf("app: unknown mode %q", o.Mode)
 	}
 
-	return &App{
+	a := &App{
 		mode:       o.Mode,
 		log:        o.Logger,
 		cfg:        o.Config,
 		configFile: o.ConfigFile,
 		flags:      o.Flags,
 		reloaded:   make(chan struct{}, 1),
-	}, nil
+	}
+
+	repo, err := newRepository(o.Config)
+	if err != nil {
+		return nil, err
+	}
+	a.tasks = task.NewService(repo)
+
+	if o.Mode.Runs() {
+		handler, err := api.NewMux(api.MuxOptions{
+			Service:      a.tasks,
+			MaxBodyBytes: o.Config.HTTP.MaxBodyBytes,
+		})
+		if err != nil {
+			return nil, err
+		}
+		a.apiServer = newHTTPServer(o.Config.HTTP, handler, o.Logger.Logger, "api")
+	}
+
+	return a, nil
 }
+
+// newRepository selects the storage backend.
+//
+// memory is the default and needs nothing: it is what makes `go run` work with
+// no Postgres, no Docker and no configuration, which is the literal requirement
+// the exercise states. postgres is what everything built on top of it needs.
+func newRepository(cfg *config.Config) (task.Repository, error) {
+	switch cfg.Storage.Backend {
+	case config.BackendMemory:
+		return memrepo.New(), nil
+	case config.BackendPostgres:
+		return nil, fmt.Errorf("storage backend %q is not wired yet", cfg.Storage.Backend)
+	default:
+		return nil, fmt.Errorf("unknown storage backend %q", cfg.Storage.Backend)
+	}
+}
+
+// Tasks exposes the domain service, for tests and for the worker wiring.
+func (a *App) Tasks() *task.Service { return a.tasks }
 
 // Config returns the current effective configuration. Callers must treat the
 // result as read-only; SIGHUP replaces the pointer rather than mutating it.
@@ -126,8 +173,14 @@ func (a *App) Logger() *logging.Handle { return a.log }
 func (a *App) workers() []Worker {
 	var ws []Worker
 
-	// Reload first in the table means it is the first told to stop: a config
-	// reload racing a shutdown helps nobody.
+	// Drain order, top to bottom. The public listener goes first: stop
+	// accepting new work before anything that might be needed to finish the
+	// work already accepted is taken away.
+	if a.apiServer != nil {
+		ws = append(ws, serveWorker("api", a.apiServer, a.log.Logger))
+	}
+
+	// Last, because a config reload racing a shutdown helps nobody.
 	ws = append(ws, Worker{Name: "config-reloader", Run: a.runReloader})
 
 	return ws

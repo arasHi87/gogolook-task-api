@@ -39,11 +39,11 @@ lint:
 
 ## test: unit tests only (fast, no Docker)
 test:
-	go test -race -short -covermode=atomic -coverprofile=coverage.out $(PKG)
+	go test -race -short -covermode=atomic -coverpkg=$(PKG) -coverprofile=coverage.out $(PKG)
 
 ## test-integration: full suite incl. testcontainers Postgres
 test-integration:
-	go test -race -covermode=atomic -coverprofile=coverage.out $(PKG)
+	go test -race -covermode=atomic -coverpkg=$(PKG) -coverprofile=coverage.out $(PKG)
 
 ## cover: open the HTML coverage report
 cover: test

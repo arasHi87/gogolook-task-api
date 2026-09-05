@@ -446,7 +446,13 @@ components:
           type: string
           title: id
           format: uuid
-          description: Server-assigned identifier. Ignored on create.
+          description: |-
+            Server-assigned identifier. Ignored on create and on update, where the
+             path is authoritative.
+
+             IGNORE_IF_ZERO_VALUE, not a plain uuid rule: a create request has no id to
+             send, and rejecting it for the absence of a field the server assigns would
+             make the endpoint unusable. A non-empty id is still checked.
         name:
           type: string
           title: name
