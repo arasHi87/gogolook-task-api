@@ -2,15 +2,14 @@ package queue
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
+	"github.com/arasHi87/gogolook-task-api/internal/postgres"
 )
 
 // Maintenance runs the fleet-wide loops: the scheduler, the reaper and the
@@ -123,7 +122,7 @@ func (m *Maintenance) asLeader(ctx context.Context, name string, fn func(context
 	//nolint:errcheck // a rollback after commit is a no-op
 	defer tx.Rollback(ctx)
 
-	led, err := WithLeader(ctx, tx, name, fn)
+	led, err := postgres.WithLeader(ctx, tx, name, fn)
 	if err != nil {
 		if ctx.Err() == nil {
 			m.log.Error("maintenance failed", slog.String("sweep", name), slog.Any("err", err))
@@ -141,6 +140,3 @@ func (m *Maintenance) asLeader(ctx context.Context, name string, fn func(context
 		m.log.Error("maintenance could not commit", slog.String("sweep", name), slog.Any("err", err))
 	}
 }
-
-var _ = errors.Is
-var _ = pgx.ErrNoRows
