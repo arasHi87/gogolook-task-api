@@ -74,10 +74,15 @@ func TestEveryKindHasADefaultMessage(t *testing.T) {
 func TestRetryable(t *testing.T) {
 	t.Parallel()
 
+	// The set is small and each member is here for a reason: the dependency
+	// might recover, the work might be quicker next time, the bug might not
+	// repeat, the pacing window will pass, or the cancellation was ours.
 	retryable := map[apperr.Kind]bool{
 		apperr.Unavailable: true,
 		apperr.Timeout:     true,
 		apperr.Internal:    true,
+		apperr.Exhausted:   true,
+		apperr.Canceled:    true,
 	}
 	for _, k := range allKinds {
 		if got := k.Retryable(); got != retryable[k] {

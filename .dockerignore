@@ -25,7 +25,8 @@ coverage.*
 # Secrets
 .env
 
-# Not compiled into the binary
+# Not compiled into the binary. deploy/ holds the sink, which has its own
+# Dockerfile and build context.
 deploy/
 test/
 proto/

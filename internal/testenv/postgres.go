@@ -50,6 +50,19 @@ func DSN(t *testing.T) string {
 	return dsnFor(t, database(t))
 }
 
+// PostgresAt returns a pool on a database an earlier DSN call created, for a
+// test that needs both the connection string and a pool on the same data.
+func PostgresAt(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
+
+	pool, err := postgres.Open(context.Background(), poolConfig(dsn), postgres.RoleAPI, "test")
+	if err != nil {
+		t.Fatalf("open %s: %v", dsn, err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
 // FreshDSN returns a private database with no schema applied, for tests of the
 // migrator itself.
 func FreshDSN(t *testing.T) string {

@@ -18,8 +18,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/pflag"
 
@@ -28,6 +30,8 @@ import (
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
 	"github.com/arasHi87/gogolook-task-api/internal/postgres"
+	"github.com/arasHi87/gogolook-task-api/internal/queue"
+	"github.com/arasHi87/gogolook-task-api/internal/queue/handler"
 	"github.com/arasHi87/gogolook-task-api/internal/runtime"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 	"github.com/arasHi87/gogolook-task-api/internal/task/memrepo"
@@ -81,6 +85,12 @@ type App struct {
 	health      *admin.Handler
 	pool        *pgxpool.Pool
 
+	// The queue runs only on the postgres backend: it is the outbox, and an
+	// in-memory store has no transaction to write one in.
+	jobs        *queue.Pool
+	maintenance *queue.Maintenance
+	listener    *queue.Listener
+
 	closers []func() error
 }
 
@@ -125,6 +135,12 @@ func New(o Options) (*App, error) {
 		}
 	}
 
+	if o.Mode.Consumes() && a.pool != nil {
+		if err := a.newQueue(o.Config, o.Logger.Logger); err != nil {
+			return nil, err
+		}
+	}
+
 	// The admin listener runs in every mode, including worker: a process with
 	// no public port still has to be scrapeable and probeable.
 	a.health = admin.New(a.readinessChecks()...)
@@ -147,6 +163,45 @@ func (a *App) readinessChecks() []admin.Check {
 		// and a SELECT would also be reporting on the query planner.
 		Probe: a.pool.Ping,
 	}}
+}
+
+// newQueue wires the consumer side: the listener that wakes it, the pool that
+// claims and runs, and the maintenance loops one replica runs for everyone.
+func (a *App) newQueue(cfg *config.Config, log *slog.Logger) error {
+	store := queue.NewStore(a.pool)
+
+	a.listener = queue.NewListener(cfg.Storage.Postgres.DSN, log)
+	a.maintenance = queue.NewMaintenance(a.pool, store, cfg.Queue, log)
+
+	webhook := handler.NewWebhook(cfg.Webhook.URL, cfg.Webhook.Timeout.D(), nil)
+
+	jobs, err := queue.NewPool(queue.PoolOptions{
+		Store: store,
+		Handlers: map[string]queue.HandlerFunc{
+			pgrepo.JobKind: webhook.Handle,
+		},
+		// locked_by has to be unique per process, or the stale-worker guard
+		// cannot tell two replicas apart and a zombie can overwrite a live
+		// worker's result.
+		WorkerID: workerID(cfg.Service.Instance),
+		Config:   cfg.Queue,
+		Logger:   log,
+		Notify:   a.listener.Notifications(),
+	})
+	if err != nil {
+		return err
+	}
+	a.jobs = jobs
+	return nil
+}
+
+// workerID identifies this process in the queue.
+//
+// The instance alone is not enough: two processes on one host, or a container
+// restarted under the same name, would share an id and each could then finalize
+// the other's jobs.
+func workerID(instance string) string {
+	return fmt.Sprintf("%s/%d/%s", instance, os.Getpid(), uuid.NewString()[:8])
 }
 
 // adminHTTP borrows the public listener's timeouts for the private one. They
@@ -268,6 +323,17 @@ func (a *App) workers() []Worker {
 
 	if a.apiServer != nil {
 		ws = append(ws, serveWorker("api", a.apiServer, a.log.Logger))
+	}
+
+	// The queue drains after the API: a job enqueued by the last request
+	// accepted should still be picked up, and Stop hands back anything that
+	// does not finish in time rather than letting its lease expire.
+	if a.jobs != nil {
+		ws = append(ws,
+			Worker{Name: "queue-listener", Run: a.listener.Run},
+			Worker{Name: "queue-workers", Run: a.jobs.Run, Stop: a.jobs.Stop},
+			Worker{Name: "queue-maintenance", Run: a.maintenance.Run},
+		)
 	}
 
 	ws = append(ws, Worker{Name: "config-reloader", Run: a.runReloader})

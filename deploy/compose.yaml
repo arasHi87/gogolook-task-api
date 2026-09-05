@@ -71,9 +71,68 @@ services:
         condition: service_healthy
     restart: "no"
 
+  worker:
+    <<: *image
+    command: ["worker"]
+    environment:
+      <<: *postgres-env
+      TASKAPI_LOGGING_FORMAT: json
+      TASKAPI_LOGGING_LEVEL: ${LOG_LEVEL:-info}
+      TASKAPI_WEBHOOK_URL: http://webhook-sink:8080/hook
+    ports:
+      # A different admin port, so both processes can be probed from the host.
+      - "${WORKER_ADMIN_PORT:-9091}:9090"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/taskapi", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    restart: unless-stopped
+    # Long enough for the drain to finish in-flight jobs and release what it
+    # cannot, rather than leaving them to a lease timeout.
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    cap_drop:
+      - ALL
+
+  # A sink that can be told to misbehave, so the resilience claims can be
+  # demonstrated instead of asserted.
+  webhook-sink:
+    build:
+      # Its own context, not the repository root: the root .dockerignore
+      # excludes deploy/, and the sink lives there.
+      context: webhook-sink
+    image: taskapi-webhook-sink:${VERSION:-dev}
+    ports:
+      - "${SINK_PORT:-8081}:8080"
+    environment:
+      SINK_FAIL_RATE: ${SINK_FAIL_RATE:-0}
+      SINK_LATENCY: ${SINK_LATENCY:-0s}
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 64M
+
   api:
     <<: *image
-    command: ["all"]
+    # serve, not all: the API does not consume the queue. Running the two as
+    # separate processes from the same image is what shows the queue is
+    # genuinely decoupled — and it makes "kill the worker mid-job and watch the
+    # lease reaper" something you can do rather than something claimed.
+    command: ["serve"]
     ports:
       - "${API_PORT:-8080}:8080"
       # Published only so a reviewer can curl it. In a real deployment the

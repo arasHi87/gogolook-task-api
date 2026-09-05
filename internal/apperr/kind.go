@@ -145,7 +145,14 @@ func (k Kind) message() string {
 // a poison job and retrying it five times only hides the bug.
 func (k Kind) Retryable() bool {
 	switch k.normalize() {
-	case Unavailable, Timeout, Internal:
+	// Exhausted is the canonical "try again later": a 429 says the work was
+	// refused for pacing, not rejected.
+	//
+	// Canceled is here because cancellation is never the work's own fault — a
+	// handler cancelled by a shutdown or by losing its lease should be tried
+	// again. Over HTTP it means the client went away and nobody retries
+	// anyway, so including it costs nothing there.
+	case Unavailable, Timeout, Internal, Canceled, Exhausted:
 		return true
 	default:
 		return false

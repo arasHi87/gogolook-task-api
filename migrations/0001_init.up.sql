@@ -128,6 +128,12 @@ ALTER TABLE jobs SET (
 -- The fingerprint is what distinguishes a retry from a mistake: the same key
 -- with the same request is a replay, the same key with a different request is
 -- the client reusing a key it should not have.
+-- state is text with a CHECK rather than an enum, unlike jobs.state above. The
+-- difference is deliberate: jobs.state has seven values, is compared on every
+-- claim and sits in three partial indexes, so an enum's four fixed bytes and
+-- natural ordering earn their keep. This one has two values on rows that live
+-- a day, and a CHECK can be changed with ALTER TABLE, where an enum value can
+-- be added but never removed or reordered.
 CREATE TABLE idempotency_keys (
     key           text        PRIMARY KEY,
     fingerprint   bytea       NOT NULL,
@@ -135,7 +141,15 @@ CREATE TABLE idempotency_keys (
     status_code   int,
     response_body jsonb,
     created_at    timestamptz NOT NULL DEFAULT now(),
-    expires_at    timestamptz NOT NULL DEFAULT now() + interval '24 hours'
+    expires_at    timestamptz NOT NULL DEFAULT now() + interval '24 hours',
+
+    -- A completed row must have a response to replay. Without this, a row that
+    -- reached completed with a NULL body would replay an empty response to
+    -- every retry — silently, and looking exactly like a successful replay.
+    CONSTRAINT idempotency_keys_completed_has_response CHECK (
+        state <> 'completed'
+        OR (status_code IS NOT NULL AND response_body IS NOT NULL)
+    )
 );
 
 CREATE INDEX idempotency_keys_expiry_idx ON idempotency_keys (expires_at);

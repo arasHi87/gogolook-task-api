@@ -175,6 +175,16 @@ tasks:
     cmds:
       - "{{.COMPOSE}} down -v"
 
+  demo:crash:
+    desc: Kill the worker mid-job and watch the lease reaper recover its work
+    cmds:
+      - ./test/demo/crash.sh
+
+  sink:
+    desc: Report what the webhook sink has received
+    cmds:
+      - curl -s localhost:${SINK_PORT:-8081}/stats
+
   logs:
     desc: Follow the stack logs
     cmds:
