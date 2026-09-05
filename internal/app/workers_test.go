@@ -52,9 +52,13 @@ func TestWorkerTableIsInDrainOrder(t *testing.T) {
 		//
 		// admin last: health and metrics answer for the whole drain instead of
 		// going dark at the start of it.
-		ModeServe:  {"readiness", "api", "config-reloader", "admin"},
-		ModeAll:    {"readiness", "api", "config-reloader", "admin"},
-		ModeWorker: {"readiness", "config-reloader", "admin"},
+		//
+		// idempotency-purge is present in every mode: it is leader-elected, so
+		// running it everywhere costs nothing and means keys keep being purged
+		// even when only workers are up.
+		ModeServe:  {"readiness", "api", "idempotency-purge", "config-reloader", "admin"},
+		ModeAll:    {"readiness", "api", "idempotency-purge", "config-reloader", "admin"},
+		ModeWorker: {"readiness", "idempotency-purge", "config-reloader", "admin"},
 	}
 
 	for mode, want := range cases {

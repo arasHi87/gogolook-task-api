@@ -49,6 +49,11 @@ func TestMigrateDownRollsBackOneStep(t *testing.T) {
 	if err := postgres.MigrateUp(dsn); err != nil {
 		t.Fatalf("up: %v", err)
 	}
+	top, err := postgres.MigrateStatus(dsn)
+	if err != nil {
+		t.Fatalf("status after up: %v", err)
+	}
+
 	if err := postgres.MigrateDown(dsn); err != nil {
 		t.Fatalf("down: %v", err)
 	}
@@ -57,8 +62,11 @@ func TestMigrateDownRollsBackOneStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if st.Version != 0 {
-		t.Errorf("version = %d after rolling back the only migration, want 0", st.Version)
+	// One step, whatever the latest version happens to be. Pinning the
+	// expected version to a number means every new migration breaks a test
+	// about the migrator rather than about the schema.
+	if want := top.Version - 1; st.Version != want {
+		t.Errorf("version = %d after one rollback from %d, want %d", st.Version, top.Version, want)
 	}
 	if st.Pending == 0 {
 		t.Error("nothing is pending after a rollback")

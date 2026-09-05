@@ -21,7 +21,7 @@ func MaxBody(limit int64) func(http.Handler) http.Handler {
 
 			if r.ContentLength > limit {
 				w.Header().Set("Connection", "close")
-				writeProblem(w, r, http.StatusRequestEntityTooLarge,
+				WriteProblem(w, r, http.StatusRequestEntityTooLarge,
 					"request body exceeds the limit of "+strconv.FormatInt(limit, 10)+" bytes")
 				return
 			}

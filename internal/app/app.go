@@ -28,6 +28,7 @@ import (
 	"github.com/arasHi87/gogolook-task-api/internal/admin"
 	"github.com/arasHi87/gogolook-task-api/internal/buildinfo"
 	"github.com/arasHi87/gogolook-task-api/internal/config"
+	"github.com/arasHi87/gogolook-task-api/internal/idempotency"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
 	"github.com/arasHi87/gogolook-task-api/internal/postgres"
 	"github.com/arasHi87/gogolook-task-api/internal/queue"
@@ -85,6 +86,12 @@ type App struct {
 	health      *admin.Handler
 	pool        *pgxpool.Pool
 
+	// keys remembers what an Idempotency-Key produced. Both backends have one:
+	// the memory store makes `go run` honour the header rather than silently
+	// dropping it.
+	keys      idempotency.Store
+	keysPurge *idempotency.Purger
+
 	// The queue runs only on the postgres backend: it is the outbox, and an
 	// in-memory store has no transaction to write one in.
 	jobs        *queue.Pool
@@ -128,6 +135,7 @@ func New(o Options) (*App, error) {
 		return nil, err
 	}
 	a.tasks = task.NewService(repo)
+	a.newIdempotency(o.Config, o.Logger.Logger)
 
 	if o.Mode.Runs() {
 		if a.apiServer, err = a.newAPIServer(o.Config); err != nil {
@@ -147,6 +155,25 @@ func New(o Options) (*App, error) {
 	a.adminServer = newHTTPServer(adminHTTP(o.Config), a.health.Mux(), o.Logger.Logger, "admin")
 
 	return a, nil
+}
+
+// newIdempotency selects the key store, matching the storage backend.
+//
+// It has to match: a Postgres-backed service with an in-memory key store would
+// honour a retry only when it landed on the same replica, which is worse than
+// not honouring it at all — the failure is invisible and depends on the load
+// balancer.
+func (a *App) newIdempotency(cfg *config.Config, log *slog.Logger) {
+	if !cfg.Idempotency.Enabled {
+		return
+	}
+
+	if a.pool != nil {
+		a.keys = idempotency.NewPostgresStore(a.pool)
+	} else {
+		a.keys = idempotency.NewMemoryStore()
+	}
+	a.keysPurge = idempotency.NewPurger(a.keys, cfg.Idempotency, log)
 }
 
 // readinessChecks are the dependencies this process needs to serve.
@@ -234,8 +261,10 @@ func (o Options) validate() error {
 // surface, the documentation, and the middleware chain around them.
 func (a *App) newAPIServer(cfg *config.Config) (*http.Server, error) {
 	handler, err := runtime.NewHandler(runtime.Options{
-		Service:      a.tasks,
-		MaxBodyBytes: cfg.HTTP.MaxBodyBytes,
+		Service:           a.tasks,
+		MaxBodyBytes:      cfg.HTTP.MaxBodyBytes,
+		Idempotency:       a.keys,
+		IdempotencyConfig: cfg.Idempotency,
 	})
 	if err != nil {
 		return nil, err
@@ -308,6 +337,8 @@ func (a *App) workers() []Worker {
 	//                   the listener stops accepting. The requests that arrive
 	//                   in that window are still served.
 	//   api             stop accepting, finish what was accepted.
+	//   idempotency-purge
+	//                   a housekeeping loop; nothing waits on it.
 	//   config-reloader a reload racing a shutdown helps nobody.
 	//   admin           last, so health and metrics answer for the whole
 	//                   drain rather than going dark at the start of it.
@@ -334,6 +365,12 @@ func (a *App) workers() []Worker {
 			Worker{Name: "queue-workers", Run: a.jobs.Run, Stop: a.jobs.Stop},
 			Worker{Name: "queue-maintenance", Run: a.maintenance.Run},
 		)
+	}
+
+	// Leader-elected, so running it in every mode costs nothing and means the
+	// keys keep being purged even when only workers are up.
+	if a.keysPurge != nil {
+		ws = append(ws, Worker{Name: "idempotency-purge", Run: a.keysPurge.Run})
 	}
 
 	ws = append(ws, Worker{Name: "config-reloader", Run: a.runReloader})

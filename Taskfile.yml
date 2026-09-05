@@ -193,6 +193,11 @@ tasks:
     cmds:
       - ./test/demo/crash.sh
 
+  demo:idempotency:
+    desc: Send the same write twice and watch it happen once
+    cmds:
+      - ./test/demo/idempotency.sh
+
   sink:
     desc: Report what the webhook sink has received
     cmds:

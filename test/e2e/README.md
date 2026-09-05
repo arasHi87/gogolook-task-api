@@ -65,6 +65,10 @@ Three decisions do most of the work:
 | `TestGracefulDrainFinishesInFlightWork` | SIGTERM mid-flight ⇒ the work finishes, no lease expires, nothing is delivered twice |
 | `TestWebhookOutageRetriesThenRecovers` | a 5xx is their problem: retry with backoff and survive it |
 | `TestRejectedWebhookIsNotRetried` | a 4xx is ours: terminal on the first attempt, not five |
+| `TestARetriedWriteExecutesOnce` | the same `Idempotency-Key` twice ⇒ one task, one event, one webhook, a byte-identical replay |
+| `TestKeyReuseIsRejectedEndToEnd` | the same key with a different request ⇒ 422, and nothing executed |
+| `TestAKeyWorksAcrossBothSurfaces` | a key used on `/api/v1/tasks` and retried on `/tasks` is a retry, not reuse |
+| `TestAFailedWriteDoesNotConsumeItsKey` | a rejected write leaves no key, so the client's retry can succeed |
 
 ## What it deliberately does not cover
 
@@ -77,9 +81,22 @@ Three decisions do most of the work:
 
 ## What it has already caught
 
-`X-Event-Id` was the task id and version, and a delete carries the version of
-the row it removed — so a delete and the update before it shared an id, and a
-receiver following our own instruction to deduplicate on that header would have
-silently dropped every deletion. No unit test could see it: it needs three real
-changes, delivered to a real receiver, in order. The identity now lives on
+**A delete that looked like a replay of the update before it.** `X-Event-Id`
+was the task id and version, and a delete carries the version of the row it
+removed — so a delete and the preceding update shared an id, and a receiver
+following our own instruction to deduplicate on that header would have silently
+dropped every deletion. No unit test could see it: it needs three real changes,
+delivered to a real receiver, in order. The identity now lives on
 `pgrepo.Event.ID()` and is the same string the outbox deduplicates on.
+
+**A replayed response that was gzip.** The handler compresses according to the
+request's `Accept-Encoding`, and the idempotency middleware sits outside it, so
+what it captured was the encoded form — replayed later without its
+`Content-Encoding` and read as binary garbage. Every unit test passed, because
+a plain test handler compresses nothing. Keyed writes now negotiate the
+encoding away so the stored bytes are the canonical representation, servable to
+any retry.
+
+**A response writer connect-go refused to use.** The capturing writer did not
+implement `http.Flusher`, which connect type-asserts. Every write returned 500
+the moment the real transcoder was behind it.

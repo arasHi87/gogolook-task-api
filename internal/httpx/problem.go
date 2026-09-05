@@ -22,13 +22,13 @@ type problem struct {
 	Instance string `json:"instance,omitempty"`
 }
 
-// writeProblem emits an error the middleware chain generates itself — before a
+// WriteProblem emits an error the middleware chain generates itself — before a
 // request reaches the transcoder, or after it panicked out of one.
 //
 // Errors returned by a handler take Connect's own error path instead, so that
 // gRPC and Connect clients get a native error rather than a JSON body they
 // cannot interpret. Both shapes carry the request id.
-func writeProblem(w http.ResponseWriter, r *http.Request, status int, detail string) {
+func WriteProblem(w http.ResponseWriter, r *http.Request, status int, detail string) {
 	// Anything already written by the handler makes this a no-op with a broken
 	// body; better to stop than to append garbage.
 	if w.Header().Get("Content-Type") != "" && status == http.StatusInternalServerError {

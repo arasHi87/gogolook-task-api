@@ -37,7 +37,7 @@ func Recover() func(http.Handler) http.Handler {
 					slog.String("stack", string(debug.Stack())),
 				)
 
-				writeProblem(w, r, http.StatusInternalServerError, "internal error")
+				WriteProblem(w, r, http.StatusInternalServerError, "internal error")
 			}()
 
 			next.ServeHTTP(w, r)

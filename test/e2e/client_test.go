@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/arasHi87/gogolook-task-api/internal/idempotency"
 )
 
 // client speaks the contract the assignment specifies, over a real socket to a
@@ -85,6 +87,35 @@ func (c *client) do(method, path string, body any) (*http.Response, []byte) {
 	}
 	return resp, raw
 }
+
+// keyed issues a request carrying an Idempotency-Key, and returns the response
+// with its body as a string so a replay can be compared to the original byte
+// for byte.
+func (c *client) keyed(key, method, path, body string) (*http.Response, string) {
+	c.t.Helper()
+
+	req, err := http.NewRequestWithContext(c.t.Context(), method, c.base+path, bytes.NewBufferString(body))
+	if err != nil {
+		c.t.Fatalf("%s %s: build request: %v", method, path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(idempotency.HeaderKey, key)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		c.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // body is fully read below
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.t.Fatalf("%s %s: read body: %v", method, path, err)
+	}
+	return resp, string(raw)
+}
+
+// unmarshal decodes a response body captured as a string.
+func unmarshal(body string, out any) error { return json.Unmarshal([]byte(body), out) }
 
 // expect issues a request, requires a status, and decodes the body into out.
 func (c *client) expect(method, path string, body any, want int, out any) {

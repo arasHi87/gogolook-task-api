@@ -128,6 +128,8 @@ ALTER TABLE jobs SET (
 -- The fingerprint is what distinguishes a retry from a mistake: the same key
 -- with the same request is a replay, the same key with a different request is
 -- the client reusing a key it should not have.
+--
+-- response_body is jsonb here and bytea from 0002; see that migration for why.
 -- state is text with a CHECK rather than an enum, unlike jobs.state above. The
 -- difference is deliberate: jobs.state has seven values, is compared on every
 -- claim and sits in three partial indexes, so an enum's four fixed bytes and

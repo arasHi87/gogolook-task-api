@@ -20,7 +20,9 @@ import (
 	"github.com/arasHi87/gogolook-task-api/docs"
 	"github.com/arasHi87/gogolook-task-api/gen/task/v1/taskv1connect"
 	"github.com/arasHi87/gogolook-task-api/internal/api"
+	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/httpx"
+	"github.com/arasHi87/gogolook-task-api/internal/idempotency"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 )
 
@@ -30,6 +32,11 @@ type Options struct {
 	Service *task.Service
 	// MaxBodyBytes caps request bodies. Zero disables the cap.
 	MaxBodyBytes int64
+	// Idempotency remembers what a key produced. Nil disables the layer, which
+	// is what a deployment with no store configured gets.
+	Idempotency idempotency.Store
+	// IdempotencyConfig tunes the layer. Ignored when Idempotency is nil.
+	IdempotencyConfig config.Idempotency
 
 	// handler replaces the transcoder. Unexported because it exists only so a
 	// test can drive the real middleware chain around a handler that misbehaves
@@ -54,7 +61,7 @@ func NewHandler(o Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return wrap(routes, o.MaxBodyBytes), nil
+	return wrap(routes, o), nil
 }
 
 // routes assembles the handler tree, before any middleware.
@@ -109,13 +116,22 @@ func (o Options) transcoder() (http.Handler, error) {
 //	            handler produces a response instead of a dropped connection.
 //	Deprecation before the handler, because headers must be set before anything
 //	            writes.
-//	MaxBody     innermost, closest to whatever reads the body.
-func wrap(h http.Handler, maxBody int64) http.Handler {
-	return httpx.Chain(h,
+//	MaxBody     before Idempotency, so the body that gets buffered and hashed
+//	            is already size-capped.
+//	Idempotency innermost, so what it stores is the response the handler
+//	            produced rather than one a later middleware decorated — and so
+//	            a replay still passes back out through the logger and comes
+//	            out of the chain looking like any other response.
+func wrap(h http.Handler, o Options) http.Handler {
+	mw := []httpx.Middleware{
 		httpx.RequestID(),
 		httpx.Logger(),
 		httpx.Recover(),
 		httpx.Deprecation(),
-		httpx.MaxBody(maxBody),
-	)
+		httpx.MaxBody(o.MaxBodyBytes),
+	}
+	if o.Idempotency != nil {
+		mw = append(mw, idempotency.Middleware(o.Idempotency, o.IdempotencyConfig))
+	}
+	return httpx.Chain(h, mw...)
 }

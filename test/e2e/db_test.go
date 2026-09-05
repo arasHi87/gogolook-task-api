@@ -118,6 +118,17 @@ func (h *harness) requireAllSucceeded(js []job) {
 	}
 }
 
+// keyRows is how many idempotency keys are stored.
+func (h *harness) keyRows() int {
+	h.t.Helper()
+
+	var n int
+	if err := h.DB.QueryRow(h.t.Context(), `SELECT count(*) FROM idempotency_keys`).Scan(&n); err != nil {
+		h.t.Fatalf("count idempotency keys: %v", err)
+	}
+	return n
+}
+
 // taskCount is how many rows survive in the domain table.
 func (h *harness) taskCount() int {
 	h.t.Helper()

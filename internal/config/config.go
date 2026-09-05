@@ -48,6 +48,7 @@ type Config struct {
 	Admin         Admin         `koanf:"admin"         yaml:"admin"         json:"admin"`
 	Storage       Storage       `koanf:"storage"       yaml:"storage"       json:"storage"`
 	Queue         Queue         `koanf:"queue"         yaml:"queue"         json:"queue"`
+	Idempotency   Idempotency   `koanf:"idempotency"   yaml:"idempotency"   json:"idempotency"`
 	Auth          Auth          `koanf:"auth"          yaml:"auth"          json:"auth"`
 	RateLimit     RateLimit     `koanf:"ratelimit"     yaml:"ratelimit"     json:"ratelimit"`
 	Breaker       Breaker       `koanf:"breaker"       yaml:"breaker"       json:"breaker"`
@@ -67,6 +68,7 @@ func (c *Config) sections() []Section {
 		&c.Admin,
 		&c.Storage,
 		&c.Queue,
+		&c.Idempotency,
 		&c.Auth,
 		&c.RateLimit,
 		&c.Breaker,
