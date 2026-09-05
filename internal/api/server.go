@@ -1,9 +1,12 @@
-// Package api adapts the Connect/gRPC surface to the domain.
+// Package api is the RPC handler, and only the RPC handler.
 //
-// It is deliberately thin: convert the request, call internal/task, convert the
-// result, map the error. No business rules live here, which is what keeps the
-// domain testable without a transport and the transport replaceable without
-// touching the domain.
+// Each method does four things: convert the request, call internal/task,
+// convert the result, map the error. No business rules live here, and no
+// transport wiring either — internal/runtime owns the routes, the codecs and
+// the middleware.
+//
+// That leaves the domain testable without a transport, and the transport
+// replaceable without touching the domain.
 package api
 
 import (

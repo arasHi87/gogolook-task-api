@@ -22,10 +22,10 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/arasHi87/gogolook-task-api/internal/api"
 	"github.com/arasHi87/gogolook-task-api/internal/buildinfo"
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
+	"github.com/arasHi87/gogolook-task-api/internal/runtime"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 	"github.com/arasHi87/gogolook-task-api/internal/task/memrepo"
 )
@@ -140,7 +140,7 @@ func (o Options) validate() error {
 // newAPIServer builds the public listener: the REST contract, the Connect
 // surface, the documentation, and the middleware chain around them.
 func (a *App) newAPIServer(cfg *config.Config) (*http.Server, error) {
-	handler, err := api.NewMux(api.MuxOptions{
+	handler, err := runtime.NewHandler(runtime.Options{
 		Service:      a.tasks,
 		MaxBodyBytes: cfg.HTTP.MaxBodyBytes,
 	})

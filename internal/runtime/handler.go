@@ -1,4 +1,12 @@
-package api
+// Package runtime is how the service is served.
+//
+// It owns the transport: the route table, the REST-to-Connect transcoding, the
+// JSON wire format and the middleware chain. It knows nothing about what a
+// task is — internal/api holds the handler, internal/task holds the rules.
+//
+// The split is what makes the transport replaceable. If vanguard ever has to
+// go, this package is the only one that changes.
+package runtime
 
 import (
 	"errors"
@@ -11,12 +19,13 @@ import (
 
 	"github.com/arasHi87/gogolook-task-api/docs"
 	"github.com/arasHi87/gogolook-task-api/gen/task/v1/taskv1connect"
+	"github.com/arasHi87/gogolook-task-api/internal/api"
 	"github.com/arasHi87/gogolook-task-api/internal/httpx"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 )
 
-// MuxOptions configures the public HTTP surface.
-type MuxOptions struct {
+// Options configures the public HTTP surface.
+type Options struct {
 	// Service is the domain.
 	Service *task.Service
 	// MaxBodyBytes caps request bodies. Zero disables the cap.
@@ -28,16 +37,17 @@ type MuxOptions struct {
 	handler http.Handler
 }
 
-// NewMux builds the public handler: the REST routes from the specification, the
-// native Connect and gRPC surface, and the API documentation.
+// NewHandler builds the public handler: the REST routes from the
+// specification, the native Connect and gRPC surface, and the API
+// documentation.
 //
 // One mux, one port, one handler implementation. vanguard reads the same
 // google.api.http annotations the OpenAPI document was generated from and
 // transcodes REST onto the Connect handler, so what is served and what is
 // documented come from one source and cannot drift.
-func NewMux(o MuxOptions) (http.Handler, error) {
+func NewHandler(o Options) (http.Handler, error) {
 	if o.Service == nil {
-		return nil, errors.New("api: a task service is required")
+		return nil, errors.New("runtime: a task service is required")
 	}
 
 	routes, err := o.routes()
@@ -48,7 +58,7 @@ func NewMux(o MuxOptions) (http.Handler, error) {
 }
 
 // routes assembles the handler tree, before any middleware.
-func (o MuxOptions) routes() (http.Handler, error) {
+func (o Options) routes() (http.Handler, error) {
 	root := o.handler // test seam; nil in every real caller
 	if root == nil {
 		var err error
@@ -67,12 +77,12 @@ func (o MuxOptions) routes() (http.Handler, error) {
 
 // transcoder builds the Connect handler and the REST transcoding in front of
 // it.
-func (o MuxOptions) transcoder() (http.Handler, error) {
+func (o Options) transcoder() (http.Handler, error) {
 	// protovalidate enforces the constraints declared in the proto: the status
 	// enum, the name length, the uuid format. Declared once, checked here, and
 	// published in the OpenAPI — no hand-written validation to fall out of step.
 	path, handler := taskv1connect.NewTaskServiceHandler(
-		NewServer(o.Service),
+		api.NewServer(o.Service),
 		connect.WithInterceptors(validate.NewInterceptor()),
 		connect.WithCodec(connectJSONCodec{}),
 	)
@@ -82,7 +92,7 @@ func (o MuxOptions) transcoder() (http.Handler, error) {
 		vanguard.WithCodec(newJSONCodec),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("api: build transcoder: %w", err)
+		return nil, fmt.Errorf("runtime: build transcoder: %w", err)
 	}
 	return t, nil
 }

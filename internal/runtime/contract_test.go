@@ -15,7 +15,7 @@
 // byte-identical in status and body; only the unversioned one carries the
 // deprecation headers. That is what stops a later refactor from quietly
 // 404-ing the paths the assignment asked for.
-package api_test
+package runtime_test
 
 import (
 	"bytes"
@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/arasHi87/gogolook-task-api/internal/api"
+	"github.com/arasHi87/gogolook-task-api/internal/runtime"
 	"github.com/arasHi87/gogolook-task-api/internal/task"
 	"github.com/arasHi87/gogolook-task-api/internal/task/memrepo"
 )
@@ -47,12 +47,12 @@ var prefixes = []struct {
 func newServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
-	handler, err := api.NewMux(api.MuxOptions{
+	handler, err := runtime.NewHandler(runtime.Options{
 		Service:      task.NewService(memrepo.New()),
 		MaxBodyBytes: 1 << 20,
 	})
 	if err != nil {
-		t.Fatalf("NewMux: %v", err)
+		t.Fatalf("NewHandler: %v", err)
 	}
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -64,12 +64,12 @@ func newServer(t *testing.T) *httptest.Server {
 func newServerWithHandler(t *testing.T, h http.Handler) *httptest.Server {
 	t.Helper()
 
-	handler, err := api.NewMuxWithHandler(api.MuxOptions{
+	handler, err := runtime.NewHandlerAround(runtime.Options{
 		Service:      task.NewService(memrepo.New()),
 		MaxBodyBytes: 1 << 20,
 	}, h)
 	if err != nil {
-		t.Fatalf("NewMuxWithHandler: %v", err)
+		t.Fatalf("NewHandlerAround: %v", err)
 	}
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -329,12 +329,12 @@ func TestWrongMethodIsRejected(t *testing.T) {
 func TestOversizedBodyIsRejected(t *testing.T) {
 	t.Parallel()
 
-	handler, err := api.NewMux(api.MuxOptions{
+	handler, err := runtime.NewHandler(runtime.Options{
 		Service:      task.NewService(memrepo.New()),
 		MaxBodyBytes: 512,
 	})
 	if err != nil {
-		t.Fatalf("NewMux: %v", err)
+		t.Fatalf("NewHandler: %v", err)
 	}
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
