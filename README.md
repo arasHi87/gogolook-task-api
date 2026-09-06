@@ -141,6 +141,7 @@ handling, the drain, and a job crossing a process boundary.
 | [docs/layout.md](docs/layout.md) | the repository, directory by directory |
 | [test/e2e/README.md](test/e2e/README.md) | the end-to-end scenarios and what each one claims |
 | [internal/queue/README.md](internal/queue/README.md) | the queue, as a census against [river](https://github.com/riverqueue/river) |
+| [docs/plan.md](docs/plan.md) | the architecture plan this was built from, decisions and all |
 
 ## A note on the Go version
 
