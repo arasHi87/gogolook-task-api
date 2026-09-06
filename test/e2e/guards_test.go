@@ -1,16 +1,12 @@
 package e2e
 
 import (
+	"fmt"
 	"net/http"
-	"strconv"
-	"strings"
 	"testing"
-	"time"
-)
 
-// demoStandardToken is the plaintext behind the compiled-in hash, published in
-// .env.example so the quickstart and this test agree on one credential.
-const demoStandardToken = "demo-standard-token"
+	"github.com/arasHi87/gogolook-task-api/test/harness"
+)
 
 // TestTheRateLimiterShedsAnonymousTraffic proves the quota is enforced by the
 // shipped binary, and that a refused caller is told enough to recover.
@@ -21,46 +17,22 @@ const demoStandardToken = "demo-standard-token"
 func TestTheRateLimiterShedsAnonymousTraffic(t *testing.T) {
 	t.Parallel()
 
-	h := start(t, withoutWorker(), withAPIEnv(
+	sys := harness.Start(t, harness.WithoutWorker(), harness.APIEnv(
 		"TASKAPI_RATELIMIT_TIERS_ANONYMOUS_RATE=2",
 		"TASKAPI_RATELIMIT_TIERS_ANONYMOUS_BURST=3",
 	))
 
-	var refused *http.Response
-	var body string
-	for range 20 {
-		resp, raw := h.API.do(http.MethodGet, "/tasks", nil)
-		if resp.StatusCode == http.StatusTooManyRequests {
-			refused, body = resp, string(raw)
-			break
-		}
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("unexpected status %d: %s", resp.StatusCode, raw)
-		}
-	}
-	if refused == nil {
-		t.Fatal("twenty requests against a burst of three were all allowed")
-	}
+	refused := drainQuota(t, sys)
 
-	if got := refused.Header.Get("Retry-After"); toInt(t, got) < 1 {
-		t.Errorf("Retry-After = %q, want at least 1", got)
-	}
-	if got := refused.Header.Get("RateLimit-Remaining"); got != "0" {
-		t.Errorf("RateLimit-Remaining = %q, want 0", got)
-	}
-	// Both spellings: the IETF draft's, and the trio most SDKs actually read.
-	//
-	// A burst of 3 refilling at 2 per second takes 2 seconds — the policy
-	// describes the bucket, so remaining can never exceed limit.
-	if got := refused.Header.Get("RateLimit-Policy"); got != "3;w=2" {
-		t.Errorf("RateLimit-Policy = %q, want %q", got, "3;w=2")
-	}
-	if got := refused.Header.Get("RateLimit"); !strings.Contains(got, "limit=3") {
-		t.Errorf("RateLimit = %q, want the tier's limit", got)
-	}
-	if !strings.Contains(body, "rate limit") {
-		t.Errorf("body does not say what happened: %s", body)
-	}
+	refused.
+		HeaderAtLeast("Retry-After", 1).
+		HasHeader("RateLimit-Remaining", "0").
+		// Both spellings: the IETF draft's, and the trio most SDKs read.
+		//
+		// A burst of 3 refilling at 2 per second takes 2 seconds — the policy
+		// describes the bucket, so remaining can never exceed limit.
+		HasHeader("RateLimit-Policy", "3;w=2").
+		BodyContains("rate limit")
 }
 
 // A token buys a bigger quota, which is the whole reason auth exists here: it
@@ -68,7 +40,7 @@ func TestTheRateLimiterShedsAnonymousTraffic(t *testing.T) {
 func TestATokenBuysTheStandardQuota(t *testing.T) {
 	t.Parallel()
 
-	h := start(t, withoutWorker(), withAPIEnv(
+	sys := harness.Start(t, harness.WithoutWorker(), harness.APIEnv(
 		"TASKAPI_RATELIMIT_TIERS_ANONYMOUS_RATE=2",
 		"TASKAPI_RATELIMIT_TIERS_ANONYMOUS_BURST=2",
 		"TASKAPI_RATELIMIT_TIERS_STANDARD_RATE=500",
@@ -77,24 +49,15 @@ func TestATokenBuysTheStandardQuota(t *testing.T) {
 
 	// Exhaust the anonymous bucket first, so the token is demonstrably not
 	// just inheriting a fresh one.
-	for range 6 {
-		h.API.do(http.MethodGet, "/tasks", nil)
-	}
+	drainQuota(t, sys)
 
-	resp, body := h.API.bearer(demoStandardToken, http.MethodGet, "/tasks")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("authenticated request: status %d, want 200: %s", resp.StatusCode, body)
-	}
-	if got := resp.Header.Get("RateLimit-Limit"); got != "500" {
-		t.Errorf("RateLimit-Limit = %q, want the standard tier's 500", got)
-	}
+	sys.API.WithToken(harness.DemoToken).Get("/tasks").
+		Status(http.StatusOK).
+		HasHeader("RateLimit-Limit", "500")
 
 	// And the anonymous caller is still throttled: the two buckets are
 	// separate, so one tenant cannot spend another's capacity.
-	anon, _ := h.API.do(http.MethodGet, "/tasks", nil)
-	if anon.StatusCode != http.StatusTooManyRequests {
-		t.Errorf("anonymous status %d, want 429: the token refilled the wrong bucket", anon.StatusCode)
-	}
+	sys.API.Get("/tasks").Status(http.StatusTooManyRequests)
 }
 
 // The default never returns 401, and that is the decision. A reviewer whose
@@ -102,28 +65,26 @@ func TestATokenBuysTheStandardQuota(t *testing.T) {
 func TestTheDefaultModeNeverRejects(t *testing.T) {
 	t.Parallel()
 
-	h := start(t, withoutWorker())
+	sys := harness.Start(t, harness.WithoutWorker())
 
-	for _, token := range []string{"", "clearly-not-a-real-token", demoStandardToken} {
-		resp, body := h.API.bearer(token, http.MethodGet, "/tasks")
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("token %q: status %d, want 200: %s", token, resp.StatusCode, body)
-		}
+	for _, token := range []string{"", "clearly-not-a-real-token", harness.DemoToken} {
+		sys.API.WithToken(token).Get("/tasks").Status(http.StatusOK)
 	}
 }
 
 // TestTheBreakerOpensAndTheJobsSurviveIt is the pairing that only makes sense
 // with both halves present.
 //
-// The breaker turns a slow failure into a fast one. On its own that is worse
-// for the job: it would burn its whole retry budget in milliseconds of instant
-// refusals and be discarded for an outage that had nothing to do with it. The
-// snooze is what stops that — and the proof is that the attempt counter does
-// not climb while the circuit is open.
+// The breaker turns a slow failure into a fast one. On its own that would be
+// worse for the jobs: they would burn their whole retry budget in milliseconds
+// of instant refusals and be discarded for an outage that had nothing to do
+// with them. The snooze is what stops that — a job parked by an open circuit
+// keeps its attempt.
 func TestTheBreakerOpensAndTheJobsSurviveIt(t *testing.T) {
 	t.Parallel()
 
-	h := start(t, withWorkerEnv(
+	const budget = 20
+	sys := harness.Start(t, harness.WorkerEnv(
 		// One attempt per job, so each delivery is one breaker execution and
 		// the arithmetic below is the arithmetic the breaker is doing.
 		"TASKAPI_WEBHOOK_RETRY_MAX_ATTEMPTS=1",
@@ -133,52 +94,42 @@ func TestTheBreakerOpensAndTheJobsSurviveIt(t *testing.T) {
 		"TASKAPI_BREAKER_WEBHOOK_OPEN_DURATION=3s",
 		"TASKAPI_BREAKER_WEBHOOK_HALF_OPEN_MAX_CALLS=2",
 		"TASKAPI_BREAKER_WEBHOOK_HALF_OPEN_SUCCESS_THRESHOLD=1",
-		// Retries are cheap so the jobs keep arriving at the breaker.
-		"TASKAPI_QUEUE_MAX_ATTEMPTS=20",
+		fmt.Sprintf("TASKAPI_QUEUE_MAX_ATTEMPTS=%d", budget),
 	))
 
-	h.Sink.fail(http.StatusServiceUnavailable)
+	sys.Webhook.Break(http.StatusServiceUnavailable)
 
 	const tasks = 8
 	for i := range tasks {
-		h.API.create("outage "+strconv.Itoa(i), 0)
+		sys.API.Create(fmt.Sprintf("outage %d", i), 0)
 	}
 
 	// A breaker that opens silently is a breaker nobody knows about, so the
 	// log line is part of the contract and is what this waits on.
-	h.worker.await(func(r record) bool {
-		return r.str("msg") == "circuit breaker opened"
-	}, 60*time.Second, "the circuit to open")
+	sys.WorkerLog("circuit breaker opened")
 
-	// While it is open the jobs are parked, not failing. scheduled is the
-	// snooze state; the attempt counter is what proves the budget is intact.
-	for _, j := range h.jobs() {
-		if j.State == "discarded" {
-			t.Errorf("job %d was discarded during the outage; its budget was spent on someone else's failure", j.ID)
-		}
-		if j.Attempt >= 20 {
-			t.Errorf("job %d is on attempt %d; the snooze did not preserve its budget", j.ID, j.Attempt)
-		}
-	}
+	// While it is open the jobs are parked, not failing. The attempt counter
+	// is what proves the budget is intact.
+	sys.Jobs.All().NoneInState("discarded").AttemptsBelow(budget)
 
 	// The dependency comes back. Every event is still delivered.
-	h.Sink.heal()
-	h.worker.await(func(r record) bool {
-		return r.str("msg") == "circuit breaker closed"
-	}, 60*time.Second, "the circuit to close")
+	sys.Webhook.Heal()
+	sys.WorkerLog("circuit breaker closed")
 
-	h.requireAllSucceeded(h.awaitSettled(tasks, 60*time.Second))
-	if got := h.Sink.distinct(); got != tasks {
-		t.Errorf("%d distinct events delivered, want %d: the outage lost a change", got, tasks)
-	}
+	sys.Jobs.AwaitSettled(tasks).AllSucceeded()
+	sys.Webhook.Distinct(tasks)
 }
 
-func toInt(t *testing.T, s string) int {
+// drainQuota spends the anonymous bucket and returns the response that was
+// refused.
+func drainQuota(t *testing.T, sys *harness.System) *harness.Response {
 	t.Helper()
 
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		t.Fatalf("expected an integer, got %q", s)
+	for range 20 {
+		if resp := sys.API.Get("/tasks"); resp.Code() == http.StatusTooManyRequests {
+			return resp
+		}
 	}
-	return n
+	t.Fatal("twenty requests against a burst of three were all allowed")
+	return nil
 }

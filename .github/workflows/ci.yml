@@ -56,7 +56,7 @@ jobs:
       # parsing, the config merge, signal handling, the drain, and a job
       # crossing a process boundary.
       - name: end-to-end tests
-        run: go test -race -count=1 -timeout=20m ./test/e2e/...
+        run: go test -race -count=1 -timeout=20m ./test/e2e/
 
       - name: build
         run: go build -trimpath ./...

@@ -1,62 +1,59 @@
-# End-to-end suite
+# End-to-end scenarios
 
 The shipped binary, a real Postgres, two processes, real HTTP.
 
 ```
-task e2e                        # the whole suite
-task e2e -- -run TestCrashed    # one case
+task e2e                        # every scenario
+task e2e -- -run TestCrashed    # one
 task e2e -- -v                  # with the processes' logs
 ```
 
 Needs a Docker daemon. `go test -short` skips it, so `task test` is unaffected.
 
-## What it starts
+## How to read this, and how to add to it
 
+The scenarios live here; the machinery lives in [`test/harness`](../harness),
+whose package documentation has the architecture diagram and the three
+decisions that make these deterministic.
+
+A scenario should read as a sequence of events:
+
+```go
+sys := harness.Start(t)
+
+sys.Webhook.Hold()
+sys.API.Create("in flight", 0)
+sys.Webhook.AwaitCount(1)
+
+sys.CrashWorker()
+sys.Jobs.All().AllInState("running").AllClaimed()
+
+sys.Webhook.Release()
+sys.StartWorker()
+sys.WorkerLog("expired leases reclaimed")
+
+sys.Jobs.AwaitSettled(1).AllSucceeded().EachRetried()
 ```
-                      test binary
-                           │
-   ┌───────────────────────┼────────────────────────┐
-   │                       │                        │
-   │  webhook sink     HTTP client            pgx pool
-   │  (httptest)      (the contract)        (assertions)
-   └───────┬───────────────┬────────────────────────┬───┘
-           │               │                        │
-           │ POST /hook    │ POST /tasks            │ SELECT
-           │               ▼                        │
-           │        ┌─────────────┐                 │
-           │        │ taskapi     │                 │
-           │        │   serve     │──── INSERT ─────┤
-           │        └─────────────┘   task + job    │
-           │                          (one tx)      ▼
-           │        ┌─────────────┐            ┌──────────┐
-           └────────│ taskapi     │─── claim ──│ Postgres │
-                    │   worker    │            │ (private │
-                    └─────────────┘            │  per test│
-                                               └──────────┘
-```
 
-Both processes are the real binary, started the way the container starts it,
-configured entirely through `TASKAPI_*`. Neither knows the other exists.
+Every verb either does something to the system or asserts something about it,
+and reports its own failure — so the scenario is the story and not the
+plumbing. **If a scenario starts to read as a sequence of `if got != want`, the
+missing verb belongs in the harness.**
 
-Three decisions do most of the work:
+One file per theme:
 
-- **Two processes, not one.** Two halves sharing a heap can pass a test for
-  reasons that have nothing to do with the queue. Here a job genuinely crosses
-  a process boundary, and `kill(2)` is available — which is the only honest way
-  to test a lease.
-- **Every listener binds port 0.** The process logs the port it got and the
-  harness reads it back out of the log stream. Picking a "free" port in the
-  test and handing it over leaves a window for something else to take it, which
-  is the kind of flake that only appears in CI.
-- **The receiver is a Go object, not a service.** `sink.hold()` parks every
-  delivery inside its handler, so a crash lands while a request is genuinely in
-  flight rather than whenever the timing works out. Nothing in this suite
-  sleeps waiting for work: it waits on a delivery, on a log record, or on a
-  row, always with a named deadline that reports what it last saw.
+| File | Theme |
+|---|---|
+| `contract_test.go` | the four endpoints the assignment asks for |
+| `delivery_test.go` | a write becomes an event becomes a webhook |
+| `idempotency_test.go` | the same request twice happens once |
+| `resilience_test.go` | crashes, drains, and a dependency that goes away |
+| `guards_test.go` | the rate limiter and the circuit breaker |
+| `observability_test.go` | what answers on which port, and what it says |
 
-## What each test is for
+## What each scenario claims
 
-| Test | The claim |
+| Scenario | The claim |
 |---|---|
 | `TestContractHoldsOnPostgres` | the assignment's four endpoints, on both path prefixes, on the durable backend |
 | `TestEventsCrossTheProcessBoundary` | one request in, three webhooks out, delivered by a process that never saw the request |

@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/arasHi87/gogolook-task-api/internal/admin"
 	"github.com/arasHi87/gogolook-task-api/internal/config"
 	"github.com/arasHi87/gogolook-task-api/internal/logging"
+	"github.com/arasHi87/gogolook-task-api/internal/runtime"
 )
 
 // newHTTPServer builds a listener with every timeout set.
@@ -76,4 +78,61 @@ func serveWorker(name string, srv *http.Server, log *slog.Logger) Worker {
 			return nil
 		},
 	}
+}
+
+// buildAPI constructs the public listener, in the modes that serve.
+func (a *App) buildAPI(cfg *config.Config) error {
+	if !a.mode.Runs() {
+		return nil
+	}
+
+	srv, err := a.newAPIServer(cfg)
+	if err != nil {
+		return err
+	}
+	a.apiServer = srv
+	return nil
+}
+
+// buildAdmin constructs the private listener.
+//
+// Last, and it has to be: its readiness probes the dependencies every step
+// above it opened, and its debug surface renders the configuration they were
+// built from.
+//
+// It runs in every mode, including worker. A process with no public port still
+// has to be scrapeable and probeable.
+func (a *App) buildAdmin(cfg *config.Config) error {
+	a.health = admin.New(a.readinessChecks()...)
+	a.adminServer = newHTTPServer(adminHTTP(cfg), a.health.Mux(a.debug()), a.log.Logger, "admin")
+	return nil
+}
+
+// newAPIServer builds the public listener: the REST contract, the Connect
+// surface, the documentation, and the middleware chain around them.
+func (a *App) newAPIServer(cfg *config.Config) (*http.Server, error) {
+	handler, err := runtime.NewHandler(runtime.Options{
+		Service:           a.tasks,
+		MaxBodyBytes:      cfg.HTTP.MaxBodyBytes,
+		Idempotency:       a.keys,
+		IdempotencyConfig: cfg.Idempotency,
+		Auth:              a.auth,
+		RateLimit:         a.limiter,
+		GlobalInflight:    inflightLimit(cfg),
+		Metrics:           a.metrics,
+		Tracing:           cfg.Observability.Tracing.Enabled,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return newHTTPServer(cfg.HTTP, handler, a.log.Logger, "api"), nil
+}
+
+// adminHTTP borrows the public listener's timeouts for the private one. They
+// are the same kind of server with the same failure modes, and a second set of
+// knobs nobody tunes is a second set of knobs to get wrong.
+func adminHTTP(cfg *config.Config) config.HTTP {
+	h := cfg.HTTP
+	h.Addr = cfg.Admin.Addr
+	return h
 }

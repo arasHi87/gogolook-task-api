@@ -1,4 +1,4 @@
-package e2e
+package harness
 
 import (
 	"bufio"
@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// process is one taskapi under test: the real binary, started the way the
+// Process is one taskapi under test: the real binary, started the way the
 // container starts it, with its log stream parsed rather than discarded.
 //
 // Parsing the log is what makes the harness deterministic. The server logs its
@@ -23,7 +23,7 @@ import (
 // something else for it; it logs "expired leases reclaimed", so a crash test
 // can wait for the reaper instead of sleeping past it. A harness that sleeps
 // for "long enough" is the harness everybody eventually marks as flaky.
-type process struct {
+type Process struct {
 	t    *testing.T
 	name string
 	cmd  *exec.Cmd
@@ -31,7 +31,7 @@ type process struct {
 	stdout bytes.Buffer
 
 	mu      sync.Mutex
-	records []record
+	records []Record
 	waiters []*waiter
 
 	// exited is closed once Wait has returned, so stop and kill can tell the
@@ -42,29 +42,33 @@ type process struct {
 	signalled bool
 }
 
-// record is one decoded log line. Lines that are not JSON — a panic trace, a
+// Record is one decoded log line. Lines that are not JSON — a panic trace, a
 // runtime message — are kept under the "raw" key so they still reach the dump.
-type record map[string]any
+type Record map[string]any
 
-func (r record) str(key string) string {
+func (r Record) str(key string) string {
 	s, _ := r[key].(string)
 	return s
 }
 
 // waiter is a predicate someone is blocked on.
 type waiter struct {
-	match func(record) bool
-	ch    chan record
+	match func(Record) bool
+	ch    chan Record
 }
 
 // startProcess launches the binary and returns once it is running. It does not
 // wait for readiness; the caller decides what "ready" means for its mode.
-func startProcess(t *testing.T, name string, args []string, env []string) *process {
+func startProcess(t *testing.T, name string, args []string, env []string) *Process {
 	t.Helper()
 
-	p := &process{
-		t:      t,
-		name:   name,
+	p := &Process{
+		t:    t,
+		name: name,
+		// The binary this package just built. Deliberately not
+		// CommandContext: this process outlives any request context and is
+		// stopped by a signal, which is the behaviour under test.
+		//nolint:gosec,noctx // G204: the binary we built; noctx: stopped by signal
 		cmd:    exec.Command(binary, args...),
 		exited: make(chan struct{}),
 	}
@@ -121,7 +125,7 @@ func cleanEnv() []string {
 }
 
 // consume reads the log stream, decodes it, and wakes anyone waiting on it.
-func (p *process) consume(r io.Reader) {
+func (p *Process) consume(r io.Reader) {
 	sc := bufio.NewScanner(r)
 	// Log lines are short, but a panic trace on one line is not.
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -132,16 +136,16 @@ func (p *process) consume(r io.Reader) {
 			continue
 		}
 
-		rec := record{}
+		rec := Record{}
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			rec = record{"raw": line}
+			rec = Record{"raw": line}
 		}
 		p.publish(rec)
 	}
 }
 
-// publish appends a record and delivers it to every waiter it satisfies.
-func (p *process) publish(rec record) {
+// publish appends a Record and delivers it to every waiter it satisfies.
+func (p *Process) publish(rec Record) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -159,12 +163,12 @@ func (p *process) publish(rec record) {
 	p.waiters = kept
 }
 
-// await blocks until a log record matches, and fails the test if none does.
+// Await blocks until a log record matches, and fails the test if none does.
 //
 // It checks the records already seen before registering, so a caller that asks
 // for something the process logged during startup is not left waiting for it
 // to happen a second time.
-func (p *process) await(match func(record) bool, within time.Duration, what string) record {
+func (p *Process) Await(match func(Record) bool, within time.Duration, what string) Record {
 	p.t.Helper()
 
 	p.mu.Lock()
@@ -174,7 +178,7 @@ func (p *process) await(match func(record) bool, within time.Duration, what stri
 			return rec
 		}
 	}
-	w := &waiter{match: match, ch: make(chan record, 1)}
+	w := &waiter{match: match, ch: make(chan Record, 1)}
 	p.waiters = append(p.waiters, w)
 	p.mu.Unlock()
 
@@ -197,10 +201,10 @@ func (p *process) await(match func(record) bool, within time.Duration, what stri
 // this line. Picking a free port in the test and handing it over would leave a
 // window in which anything else on the machine can take it, which is a class
 // of flake that only ever shows up in CI.
-func (p *process) addr(listener string) string {
+func (p *Process) addr(listener string) string {
 	p.t.Helper()
 
-	rec := p.await(func(r record) bool {
+	rec := p.Await(func(r Record) bool {
 		return r.str("msg") == "listening" && r.str("listener") == listener
 	}, 30*time.Second, "the "+listener+" listener")
 
@@ -208,7 +212,7 @@ func (p *process) addr(listener string) string {
 }
 
 // signal sends a signal without waiting for the consequences.
-func (p *process) signal(sig syscall.Signal) {
+func (p *Process) signal(sig syscall.Signal) {
 	p.t.Helper()
 
 	p.mu.Lock()
@@ -225,7 +229,7 @@ func (p *process) signal(sig syscall.Signal) {
 // A process that outlives the grace period is killed and the test is told,
 // because "shutdown took longer than the grace period" is a finding, not
 // something to paper over.
-func (p *process) stop(grace time.Duration) error {
+func (p *Process) stop(grace time.Duration) error {
 	p.t.Helper()
 
 	select {
@@ -248,7 +252,7 @@ func (p *process) stop(grace time.Duration) error {
 
 // kill is a crash: no drain, no chance to release a lease, nothing written on
 // the way out. It is the only honest way to test the reaper.
-func (p *process) kill() {
+func (p *Process) kill() {
 	p.t.Helper()
 
 	p.signal(syscall.SIGKILL)
@@ -260,7 +264,7 @@ func (p *process) kill() {
 }
 
 // running reports whether the process is still up.
-func (p *process) running() bool {
+func (p *Process) running() bool {
 	select {
 	case <-p.exited:
 		return false
@@ -270,7 +274,7 @@ func (p *process) running() bool {
 }
 
 // finish records the exit and releases everyone waiting on this process.
-func (p *process) finish(err error) {
+func (p *Process) finish(err error) {
 	p.mu.Lock()
 	// A signalled process exits non-zero by design; that is not a failure.
 	if err != nil && !p.signalled {
@@ -288,9 +292,9 @@ func (p *process) finish(err error) {
 // dump writes the process log to the test output. It runs on failure only:
 // on a green run this is a megabyte of noise, and on a red one it is the
 // entire diagnosis.
-func (p *process) dump() {
+func (p *Process) dump() {
 	p.mu.Lock()
-	records := append([]record(nil), p.records...)
+	records := append([]Record(nil), p.records...)
 	stdout := p.stdout.String()
 	p.mu.Unlock()
 

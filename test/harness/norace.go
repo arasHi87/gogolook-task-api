@@ -1,5 +1,5 @@
 //go:build !race
 
-package e2e
+package harness
 
 const raceEnabled = false

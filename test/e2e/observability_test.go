@@ -4,11 +4,12 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/arasHi87/gogolook-task-api/test/harness"
 )
 
-// TestTheAdminSurfaceIsOnTheAdminPort is a security test wearing an
-// observability test's clothes.
+// TestTheAdminSurfaceIsOnTheAdminPort is a security scenario wearing an
+// observability scenario's clothes.
 //
 // A heap profile is a memory dump and the config dump names every dependency
 // the process talks to. Which port they answer on is the boundary, so the
@@ -17,23 +18,17 @@ import (
 func TestTheAdminSurfaceIsOnTheAdminPort(t *testing.T) {
 	t.Parallel()
 
-	h := start(t, withoutWorker())
+	sys := harness.Start(t, harness.WithoutWorker())
 
-	private := []string{"/metrics", "/debug/config", "/debug/log-level", "/debug/pprof/"}
-	for _, path := range private {
-		t.Run("admin"+path, func(t *testing.T) {
-			if code, _ := h.get(h.adminURL(path)); code != http.StatusOK {
-				t.Errorf("%s on the admin port: status %d, want 200", path, code)
-			}
-		})
-		t.Run("public"+path, func(t *testing.T) {
-			// Anything but 200. The public mux routes unknown paths to the
-			// transcoder, which answers 404 or 405; what must never happen is
-			// the endpoint answering.
-			if code, body := h.get(h.publicURL(path)); code == http.StatusOK {
-				t.Errorf("%s is served on the PUBLIC port: %s", path, body)
-			}
-		})
+	for _, path := range []string{"/metrics", "/debug/config", "/debug/log-level", "/debug/pprof/"} {
+		sys.Admin.Get(path).Status(http.StatusOK)
+
+		// Anything but 200. The public mux routes unknown paths to the
+		// transcoder, which answers 404 or 405; what must never happen is the
+		// endpoint answering.
+		if resp := sys.Public.Get(path); resp.Code() == http.StatusOK {
+			t.Errorf("%s is served on the PUBLIC port: %s", path, resp.Body)
+		}
 	}
 }
 
@@ -42,21 +37,18 @@ func TestTheAdminSurfaceIsOnTheAdminPort(t *testing.T) {
 func TestTheMetricsMatchWhatTheAlertsQuery(t *testing.T) {
 	t.Parallel()
 
-	h := start(t)
+	sys := harness.Start(t)
 
-	created := h.API.create("observed", 0)
-	h.API.update(created.ID, "observed", 1)
-	h.awaitSettled(2, 30*time.Second)
+	created := sys.API.Create("observed", 0)
+	sys.API.Update(created.ID, "observed", 1)
+	sys.Jobs.AwaitSettled(2)
 
-	code, body := h.get(h.adminURL("/metrics"))
-	if code != http.StatusOK {
-		t.Fatalf("/metrics: status %d", code)
-	}
+	metrics := sys.Admin.Get("/metrics").Status(http.StatusOK)
 
 	// Every name below is read by deploy/prometheus/rules.yml or by a panel in
 	// deploy/grafana/dashboards. A rename that broke one of them would
 	// otherwise show up as an empty graph nobody notices until an incident.
-	want := []string{
+	for _, name := range []string{
 		"http_server_requests_total",
 		"http_server_request_duration_seconds_bucket",
 		"http_server_active_requests",
@@ -65,21 +57,13 @@ func TestTheMetricsMatchWhatTheAlertsQuery(t *testing.T) {
 		"db_pool_connections",
 		"build_info",
 		"go_goroutines",
-	}
-	for _, name := range want {
-		if !strings.Contains(body, name) {
-			t.Errorf("%s is missing from /metrics", name)
-		}
+	} {
+		metrics.BodyContains(name)
 	}
 
 	// The route label is templated, never the raw URL. A single unbounded
 	// label is not a metrics problem, it is an outage.
-	if strings.Contains(body, created.ID) {
-		t.Errorf("a task id appears in the metrics; the route label is not templated")
-	}
-	if !strings.Contains(body, `route="/api/v1/tasks/{id}"`) {
-		t.Error("the templated route label is missing")
-	}
+	metrics.BodyOmits(created.ID).BodyContains(`route="/api/v1/tasks/{id}"`)
 }
 
 // The worker publishes the queue's backlog; the api does not, because a
@@ -89,35 +73,34 @@ func TestTheMetricsMatchWhatTheAlertsQuery(t *testing.T) {
 func TestOnlyTheConsumerReportsTheBacklog(t *testing.T) {
 	t.Parallel()
 
-	h := start(t)
+	sys := harness.Start(t)
 
 	// The backlog gauges are queried on scrape, so an empty queue emits no
 	// series at all — which is correct, and means the scrape has to happen
 	// while something is actually pending. Holding the delivery open is what
 	// keeps a job in the running state long enough to be observed.
-	h.Sink.hold()
-	h.API.create("backlog", 0)
-	h.Sink.awaitCount(1, 30*time.Second)
+	sys.Webhook.Hold()
+	sys.API.Create("backlog", 0)
+	sys.Webhook.AwaitCount(1)
 
-	_, worker := h.get("http://" + h.worker.addr("admin") + "/metrics")
-	h.Sink.release()
+	worker := sys.WorkerMetrics()
+	sys.Webhook.Release()
 
-	if !strings.Contains(worker, "job_queue_oldest_pending_age_seconds") {
-		t.Error("the worker does not publish the queue's health signal")
+	for _, want := range []string{
+		"job_queue_oldest_pending_age_seconds",
+		`job_queue_depth{kind="task.event",state="running"} 1`,
+	} {
+		if !strings.Contains(worker, want) {
+			t.Errorf("the worker does not publish %s", want)
+		}
 	}
-	if !strings.Contains(worker, `job_queue_depth{kind="task.event",state="running"} 1`) {
-		t.Error("the worker does not report the job it is currently running")
-	}
 
-	h.awaitSettled(1, 30*time.Second)
-	if _, after := h.get("http://" + h.worker.addr("admin") + "/metrics"); !strings.Contains(after, "jobs_processed_total") {
+	sys.Jobs.AwaitSettled(1)
+	if !strings.Contains(sys.WorkerMetrics(), "jobs_processed_total") {
 		t.Error("the worker does not publish job outcomes")
 	}
 
-	_, api := h.get(h.adminURL("/metrics"))
-	if strings.Contains(api, "job_queue_depth") {
-		t.Error("the api publishes the queue backlog; two replicas would double count it")
-	}
+	sys.Admin.Get("/metrics").BodyOmits("job_queue_depth")
 }
 
 // Turning the verbosity up without a restart is the difference between
@@ -126,25 +109,16 @@ func TestOnlyTheConsumerReportsTheBacklog(t *testing.T) {
 func TestTheLogLevelCanBeChangedAtRuntime(t *testing.T) {
 	t.Parallel()
 
-	h := start(t, withoutWorker())
+	sys := harness.Start(t, harness.WithoutWorker())
 
 	// Reported in the same spelling the log records use, and accepted in any
 	// case, so a GET then a PUT of what it returned round-trips.
-	if _, body := h.get(h.adminURL("/debug/log-level")); !strings.Contains(strings.ToLower(body), "debug") {
-		t.Fatalf("initial level: %s", body)
-	}
+	sys.Admin.Get("/debug/log-level").Status(http.StatusOK).BodyContains("DEBUG")
 
-	code, body := h.put(h.adminURL("/debug/log-level"), "warn")
-	if code != http.StatusOK || !strings.Contains(strings.ToLower(body), "warn") {
-		t.Fatalf("set level: status %d: %s", code, body)
-	}
-	if _, body := h.get(h.adminURL("/debug/log-level")); !strings.Contains(strings.ToLower(body), "warn") {
-		t.Errorf("the level did not stick: %s", body)
-	}
+	sys.Admin.Put("/debug/log-level", "warn").Status(http.StatusOK).BodyContains("WARN")
+	sys.Admin.Get("/debug/log-level").BodyContains("WARN")
 
-	if code, _ := h.put(h.adminURL("/debug/log-level"), "not-a-level"); code != http.StatusBadRequest {
-		t.Errorf("an unknown level returned %d, want 400", code)
-	}
+	sys.Admin.Put("/debug/log-level", "not-a-level").Status(http.StatusBadRequest)
 }
 
 // "Which configuration is it actually running" is a different question from
@@ -152,18 +126,13 @@ func TestTheLogLevelCanBeChangedAtRuntime(t *testing.T) {
 func TestTheEffectiveConfigIsServedWithSecretsMasked(t *testing.T) {
 	t.Parallel()
 
-	h := start(t, withoutWorker())
+	sys := harness.Start(t, harness.WithoutWorker())
 
-	code, body := h.get(h.adminURL("/debug/config"))
-	if code != http.StatusOK {
-		t.Fatalf("/debug/config: status %d", code)
-	}
-	if !strings.Contains(body, "backend: postgres") {
-		t.Errorf("the dump does not reflect the environment it was started with:\n%s", body)
-	}
-	// The DSN carries the password. It must be masked here for the same reason
-	// it is masked in --print-config: this dump ends up in bug reports.
-	if strings.Contains(body, "taskapi@") || strings.Contains(body, ":taskapi@") {
-		t.Error("the database password appears in the config dump")
-	}
+	sys.Admin.Get("/debug/config").
+		Status(http.StatusOK).
+		BodyContains("backend: postgres").
+		// The DSN carries the password. It must be masked here for the same
+		// reason it is masked in --print-config: this dump ends up in bug
+		// reports.
+		BodyOmits(":taskapi@")
 }
